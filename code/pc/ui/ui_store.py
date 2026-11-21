@@ -1778,11 +1778,32 @@ def sync_status(root, bot_id, now=None):
     }
 
 
+def format_age_label(minutes):
+    """L8: nhãn tuổi tin theo ngưỡng — "Tồn N phút" / "Tồn N giờ
+    M phút" / "Tồn N ngày M giờ". Phút lẻ sau ngày và phút lẻ sau
+    giờ tròn đều bỏ (vd 2236 phút -> "Tồn 1 ngày 13 giờ", 60 phút
+    -> "Tồn 1 giờ", 1440 phút -> "Tồn 1 ngày")."""
+    minutes = int(minutes)
+    if minutes >= 1440:
+        days, rem = divmod(minutes, 1440)
+        hours = rem // 60
+        if hours:
+            return "Tồn %d ngày %d giờ" % (days, hours)
+        return "Tồn %d ngày" % days
+    if minutes >= 60:
+        hours, mins = divmod(minutes, 60)
+        if mins:
+            return "Tồn %d giờ %d phút" % (hours, mins)
+        return "Tồn %d giờ" % hours
+    return "Tồn %d phút" % minutes
+
+
 def incoming_status(seq, fetched_seq, received_epoch, now=None):
     """Trạng thái GĐ3a của 1 tin đến: đúng 3 trạng thái (05 §4).
 
-    Trả về (fetch_label, age_label_or_None). age_label là "Tồn N phút"
-    khi tuổi tin >= 1 phút — chỉ ghi tuổi, không cam kết.
+    Trả về (fetch_label, age_label_or_None). age_label là nhãn tuổi
+    theo ngưỡng của ``format_age_label`` (L8) khi tuổi tin >= 1 phút
+    — chỉ ghi tuổi, không cam kết.
     """
     if now is None:
         now = now_epoch()
@@ -1791,7 +1812,7 @@ def incoming_status(seq, fetched_seq, received_epoch, now=None):
     if received_epoch is not None:
         minutes = int((now - received_epoch) // 60)
         if minutes >= 1:
-            age_label = "Tồn %d phút" % minutes
+            age_label = format_age_label(minutes)
     return label, age_label
 
 
@@ -2040,6 +2061,98 @@ def merged_history(root, bot_id, now=None, page=1, per_page=HISTORY_PER_PAGE,
     return items[start:start + per_page], total, page, pages, sync
 
 
+CENTER_BOT_ID = "center"
+
+
+def _center_incoming(root):
+    """Tin den qua trung tam tu ``data/center/events.jsonl``.
+
+    Quy tac dem #11 dot A (21/11/2026) — tin trung tam tinh CHUNG
+    vao "hom nay", khong hien rieng mot so:
+    - chi row ``kind == "message"``: su kien he thong
+      (task_created/task_status/task_reassigned) khong phai tin nhan.
+    - chi tin cua tai khoan khac: bo tin cua ``owner`` (tin cua chu
+      nhan = chieu di, nhu replies) va tin hub tu sinh
+      (``source == "hub"``).
+    - moi record kind (hoi/bao-cao/giao-viec/khac) deu tinh: tat ca
+      deu hien bong bong o tab Chat; bo bao-cao se lech lai voi tab
+      Chat (dung loi dang sua).
+    - moc thoi gian: truong ``at`` cua row, du phong
+      ``record.created_at`` (2 truong cung 1 moc khi ghi).
+    - trung ``msg_id`` chi tinh 1 lan.
+    - khong the dem trung voi queue bot: 2 kenh ghi boi 2 dau ghi
+      khac nhau, khong gian id rieng (msg_id trung tam / event_id
+      nen tang); item trung tam mang ``event_key`` tien to
+      ``center__``.
+
+    Tra list dict {ts, ts_iso, seq, msg_id, room, sender, body} da
+    khu trung, xep theo seq tang dan. File thieu/hong -> []. Tin
+    khong co moc thoi gian parse duoc thi ts=0 (hien cuoi feed,
+    khong vao so ngay/tuan)."""
+    rows = read_jsonl_rows(Path(root) / "data" / "center" / "events.jsonl")
+    seen = set()
+    out = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") != "message":
+            continue
+        record = row.get("record")
+        if not isinstance(record, dict):
+            continue
+        sender = record.get("from_account") or ""
+        if sender == "owner" or record.get("source") == "hub":
+            continue
+        msg_id = row.get("msg_id") or record.get("msg_id") or ""
+        if msg_id:
+            if msg_id in seen:
+                continue
+            seen.add(msg_id)
+        ts = parse_iso_to_epoch(row.get("at"))
+        if ts is None:
+            ts = parse_iso_to_epoch(record.get("created_at"))
+        seq = row.get("seq")
+        out.append({
+            "ts": ts if ts is not None else 0,
+            "ts_iso": row.get("at") or record.get("created_at") or "",
+            "seq": seq if isinstance(seq, int) else None,
+            "msg_id": str(msg_id),
+            "room": record.get("room") or "chung",
+            "sender": sender,
+            "body": record.get("body") or "",
+        })
+    return out
+
+
+def _center_item(item):
+    """1 tin trung tam thanh dong feed (cung hinh dang
+    ``_incoming_item`` de renderer dung chung)."""
+    msg_id = item["msg_id"]
+    return {
+        "kind": "in",
+        "ts": item["ts"],
+        "ts_iso": item["ts_iso"],
+        "bot_id": CENTER_BOT_ID,
+        "platform": CENTER_BOT_ID,
+        "chat_id": item["room"],
+        "chat_title": "Trung tâm · %s" % item["room"],
+        "sender_id": item["sender"],
+        "sender_name": item["sender"] or None,
+        "text": item["body"],
+        "caption": None,
+        "event_id": msg_id,
+        "event_key": ("center__%s" % msg_id) if msg_id else None,
+        "reply_key": None,
+        "seq": item["seq"],
+        "fetch_label": None,
+        "age_label": None,
+        "status": "Trung tâm",
+        "paired": False,
+        "in_reply_to_event_key": None,
+        "error_class": None,
+        "message_id": msg_id,
+        "attention": False,
+    }
+
+
 def activity_feed(root, bot_ids, now=None, limit=ACTIVITY_LIMIT,
                   platforms=None, direction=None, attention_only=False,
                   query=None):
@@ -2048,6 +2161,11 @@ def activity_feed(root, bot_ids, now=None, limit=ACTIVITY_LIMIT,
     Mỗi bot đóng góp theo chế độ của nó (GĐ3a: chỉ tin đến; GĐ3b:
     cả 2 chiều). Tin đến mang trạng thái GĐ3a; trả lời mang trạng
     thái gửi của nó.
+
+    (#11 dot A) Them tin den qua trung tam (``_center_incoming``):
+    tin trung tam tinh CHUNG vao feed, khong tach rieng. Chi them
+    khi khong loc nen tang, hoac loc co "center" — loc platforms
+    rieng (vd {"zalo"}) thi khong keo tin trung tam vao.
 
     Lọc (V2 §4): ``platforms`` (tập nền tảng), ``direction``
     ("in"/"out"), ``attention_only`` (chỉ tin "cần chú ý"). ``query``
@@ -2076,6 +2194,9 @@ def activity_feed(root, bot_ids, now=None, limit=ACTIVITY_LIMIT,
             items.extend(_reply_item(bot_id, row, platform)
                          for row in reply_rows)
         all_items.extend(items)
+    if platforms is None or CENTER_BOT_ID in platforms:
+        all_items.extend(_center_item(item)
+                         for item in _center_incoming(root))
     if direction in ("in", "out"):
         all_items = [i for i in all_items if i["kind"] == direction]
     if attention_only:
@@ -2293,7 +2414,11 @@ def count_stats(root, bot_ids, now=None):
     """Dải số tổng quan (V2 §1): tin đến hôm nay / 7 ngày, trả lời đã
     gửi (tổng số trong file trả lời còn giữ), tin đang tồn (tổng tồn
     ước lượng), thư chết. Gọi với bot_ids đã lọc theo nền tảng để có
-    dải số riêng từng tab."""
+    dải số riêng từng tab.
+
+    (#11 dot A) "Tin đến hôm nay / 7 ngày" tinh CA tin den qua
+    trung tam (``_center_incoming``) CHUNG vao cung so, khong tach
+    rieng — khop voi nhung gi tab Chat hien tu events.jsonl."""
     if now is None:
         now = now_epoch()
     fetch_state = read_fetch_state(root)
@@ -2312,6 +2437,13 @@ def count_stats(root, bot_ids, now=None):
             latest_seq = 0
         fetched = fetched_seq_for(fetch_state, bot_id)
         totals["backlog"] += max(0, latest_seq - fetched)
+    today_start = _local_day_start(now)
+    week_start = _local_day_start(now, 6)
+    for item in _center_incoming(root):
+        if item["ts"] >= today_start:
+            totals["today_in"] += 1
+        if item["ts"] >= week_start:
+            totals["week_in"] += 1
     return totals
 
 

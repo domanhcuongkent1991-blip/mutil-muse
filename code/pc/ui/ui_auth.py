@@ -58,6 +58,14 @@ VIEW_SECRET_PASSWORD_FILENAME = "view_secret.hash"
 VIEW_SECRET_MIN_PASSWORD_CHARS = 8
 
 
+# Giới hạn scrypt chạy đồng thời trong verify_password (#5, đợt A
+# 21/11): 1 lần scrypt N=2^17 tốn ~134 MB RAM; ThreadingHTTPServer
+# cho nhiều request đăng nhập chạy song song nên không giới hạn thì
+# đỉnh RAM không bị chặn. Semaphore(2) -> đỉnh thêm ~256 MiB, các
+# request còn lại xếp hàng chờ. Tham số N giữ nguyên 2^17.
+_SCRYPT_SEMAPHORE = threading.Semaphore(2)
+
+
 def _ui_config_dir(root):
     return Path(root) / "ui-config"
 
@@ -110,6 +118,7 @@ def verify_password(password, stored):
         return False
     if n <= 1 or (n & (n - 1)) != 0 or r <= 0 or p <= 0:
         return False
+    _SCRYPT_SEMAPHORE.acquire()
     try:
         digest = hashlib.scrypt(
             password.encode("utf-8"), salt=salt, n=n, r=r, p=p,
@@ -117,6 +126,10 @@ def verify_password(password, stored):
         )
     except (ValueError, OverflowError):
         return False
+    finally:
+        # Luôn trả giấy phép kể cả khi scrypt lỗi, nếu không
+        # semaphore kẹt dần và UI treo ở lần đăng nhập sau.
+        _SCRYPT_SEMAPHORE.release()
     return hmac.compare_digest(digest, expected)
 
 
@@ -426,12 +439,25 @@ def record_login_failure(root, ip, now=None):
 
 def record_login_success(root, ip, now=None):
     """Đăng nhập đúng: xóa lịch sử sai của IP này (không xóa của IP
-    khác)."""
+    khác) VÀ xóa bộ đếm toàn cục (``global``).
+
+    Đổi hành vi đợt A 21/11 (xem test_success_clears_ip_and_global_
+    history): hành vi cũ giữ nguyên ``global`` nên sau khi đăng
+    nhập đúng, chủ nhân vẫn bị khóa 15 phút chỉ vì 1 lần sai nữa
+    là đủ 5 ``global``. Chỉ người nhập đúng mật khẩu mới reset
+    được bộ đếm nên rủi ro gần như bằng 0.
+    """
     if now is None:
         now = time.time()
     with _ATTEMPTS_LOCK:
         data = _load_attempts(root)
         key = str(ip)
+        changed = False
         if key in data["by_ip"]:
             del data["by_ip"][key]
+            changed = True
+        if data["global"]:
+            data["global"] = []
+            changed = True
+        if changed:
             _save_attempts(root, data)

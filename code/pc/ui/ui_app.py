@@ -990,7 +990,13 @@ class UiApp:
             return values[0] if values else default
 
         tab = _one("tab", "all")
-        if tab not in UiApp._VALID_TABS:
+        # (L6, 21/11 — quyet chu nhan) Tab sai ten KHONG sua am
+        # tham: van rot ve "all" nhung ghi co ``tab_invalid`` de
+        # luot tai trang day du redirect 302 ve
+        # ?tab=all&notice=tab-khong-hop-le; duong fragment (polling)
+        # giu fallback lang le nhu cu (khong redirect 302).
+        tab_invalid = tab not in UiApp._VALID_TABS
+        if tab_invalid:
             tab = "all"
         direction = _one("dir", "all")
         if direction not in UiApp._VALID_DIRS:
@@ -1037,7 +1043,7 @@ class UiApp:
                 "q": _one("q", "")[:200], "status": center_status,
                 "kind": center_kind, "overdue": overdue,
                 "need_owner": need_owner, "chat_limit": chat_limit,
-                "room": room}
+                "room": room, "tab_invalid": tab_invalid}
 
     @staticmethod
     def _dashboard_query(params):
@@ -1217,18 +1223,24 @@ class UiApp:
         stats = ui_store.count_stats(self.root, bot_ids, now=now)
         node_summaries = self._dashboard_node_summaries(
             prefs, stats, tab_summaries, feed)
+        # L7: 1 banner chung "đồng bộ trả lời chậm" trên node
+        # bot-cards — tính 1 lần từ đúng danh sách bot của tab đang
+        # render (tab Tất cả: 5/5, tab nền tảng: chỉ bot nền tảng đó).
+        sync_banner = ui_pages.sync_slow_banner_html(tab_summaries)
         if tab in ("zalo", "telegram"):
             body = ui_pages.platform_fragment_html(
                 tab, tab_summaries, feed, session["csrf_token"], stats,
                 names, params, accounts=accounts, prefs=prefs,
-                next_url=next_url, node_summaries=node_summaries)
+                next_url=next_url, node_summaries=node_summaries,
+                sync_banner=sync_banner)
         else:
             tailscale = self.tailscale_fn()
             body = ui_pages.overview_fragment_html(
                 tab_summaries, feed, unseen, tailscale,
                 session["csrf_token"], stats, names, params,
                 accounts=accounts, prefs=prefs, next_url=next_url,
-                node_summaries=node_summaries)
+                node_summaries=node_summaries,
+                sync_banner=sync_banner)
         return chips_html + nav + body
 
     @staticmethod
@@ -1340,6 +1352,25 @@ class UiApp:
     def _handle_dashboard(self, request, session, center_error=None,
                           center_values=None):
         params = self._dashboard_params(request)
+        # (L6, 21/11 — quyet chu nhan) Luot tai trang day du ma tab
+        # sai ten: redirect 302 ve tab Tất cả kem notice 1 lan.
+        # Khong redirect khi dang hien loi form tao viec
+        # (center_error) de khong lam mat loi; duong fragment
+        # (polling) khong qua day nen van fallback lang le ve all.
+        if params.get("tab_invalid") and center_error is None:
+            return self._with_security(Response.redirect(
+                "/?tab=all&notice=tab-khong-hop-le"))
+        # Banner chi hien khi URL co notice hop le (query param
+        # 1 lan sau redirect); tai lai trang khong co notice thi
+        # khong hien lai. Chi nhan dung gia tri da biet — khong
+        # in bat ky gia tri notice nao khac ra HTML.
+        notice_values = request.query.get("notice")
+        notice = notice_values[0] if notice_values else ""
+        notice_banner = ""
+        if notice == "tab-khong-hop-le":
+            notice_banner = (
+                '<div class="banner">Tab không tồn tại — đã chuyển '
+                "về tab Tất cả.</div>")
         if center_error is not None:
             # Form tạo việc lỗi: ở lại tab Trung tâm để hiện rõ lỗi.
             params = dict(params)
@@ -1358,7 +1389,8 @@ class UiApp:
             200,
             ui_pages.dashboard_page_html(fragment, session["csrf_token"],
                                          fragment_url=fragment_url,
-                                         static_html=static_html)))
+                                         static_html=static_html,
+                                         notice_banner=notice_banner)))
 
     def _handle_dashboard_fragment(self, request, session):
         fragment = self._dashboard_fragment(session, request)
@@ -1775,7 +1807,14 @@ class UiApp:
         fragment = ui_pages.center_chat_fragment_html(
             messages, names, task_titles, params["chat_limit"], has_more,
             room=room, oldest_seq=min_seq, newest_seq=max_seq,
-            account_colors=ui_store.center_chat_colors(self.root))
+            account_colors=ui_store.center_chat_colors(self.root),
+            # (SUA B1) Fragment delta (after_seq/before_seq) voi 0
+            # tin moi chi tra the meta, KHONG tra o trong — neu
+            # khong, moi chu ky polling 5 giay lai them 1 o trong
+            # vao hop chat. Fragment thuong (mo dau/khong tham so
+            # delta) van hien o trong khi phong thuc su rong.
+            show_empty_notice=(before_seq is None
+                               and after_seq is None))
         return self._with_security(Response.html(200, fragment))
 
     def _center_static_html(self, session, params, center_error=None,
@@ -1831,12 +1870,15 @@ class UiApp:
         room_entry = room_names.get(room)
         archived = bool(room_entry and room_entry.get("archived"))
         draft = "" if archived else store.get_draft(room)
+        # (L5, 21/11 — quyet chu nhan) Header phong dang mo luon
+        # mang tien to "Phòng đang mở:" de phan biet voi danh sach
+        # phong (danh sach da bo "Riêng:").
         if room_entry is None:
-            room_label = "Khung chung"
+            room_label = "Phòng đang mở: Khung chung"
         elif room_entry.get("account_id") is None:
-            room_label = "Khung chung"
+            room_label = "Phòng đang mở: Khung chung"
         else:
-            room_label = "Riêng: %s" % (
+            room_label = "Phòng đang mở: Riêng: %s" % (
                 room_entry.get("display_name")
                 or room_entry["account_id"])
         # ĐX-01 (T3m): canh bao kho file ngay tren khung chat khi da

@@ -103,8 +103,14 @@ h3 { font-size: 21px; margin: 16px 0 6px; font-weight: 500; }
     position: sticky; top: 0; background: var(--page); z-index: 5;
   }
 }
-.topbar .brand { font-weight: 700; font-size: 20px; margin-right: auto; }
 .topbar .fresh { color: var(--gray); font-size: 15px; }
+/* An mac dinh chip canh bao du lieu cu (P0 CSP — thay cho
+   thuoc tinh style display:none inline; JS an/hien bang CSSOM, xem
+   refreshOne trong APP_JS). */
+.is-hidden { display: none; }
+/* Khoang cach 16px tren nut submit (P0 CSP — thay cho
+   thuoc tinh style margin-top:16px inline o trang dang nhap + form bot). */
+.mt-16 { margin-top: 16px; }
 .banner {
   border: 1px solid var(--border); border-left: 8px solid var(--yellow);
   background: var(--yellow-bg); padding: 12px; margin: 12px 0;
@@ -173,6 +179,7 @@ h3 { font-size: 21px; margin: 16px 0 6px; font-weight: 500; }
   background: var(--secondary-bg); color: var(--secondary-text);
   border-radius: 999px; font-size: 13px; font-weight: 700;
   padding: 1px 8px; line-height: 1.5; white-space: nowrap;
+  margin-left: 6px;
 }
 .node-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 /* --- Dải số (V2 §1) --- */
@@ -209,7 +216,7 @@ h3 { font-size: 21px; margin: 16px 0 6px; font-weight: 500; }
   align-items: center; }
 .card .meta { color: var(--gray); font-size: 16px; }
 .card .kv { font-size: 17px; margin: 6px 0; word-break: break-word; }
-.cardlink { display: inline-block; margin-top: 8px; font-weight: 700; }
+.cardlink { display: inline-block; margin-top: 8px; font-weight: 700; padding: 7px 0; min-height: 44px; }
 .plat {
   display: inline-block; padding: 3px 10px; border-radius: 6px;
   font-size: 13px; font-weight: 800; letter-spacing: 0.06em; color: #fff;
@@ -340,6 +347,16 @@ textarea { min-height: 90px; font-family: inherit; }
   position: sticky; bottom: 0; background: var(--page);
   padding: 8px 0 12px; z-index: 1;
 }
+/* (DOT A #10, 21/11) Mobile <=699px: thanh tab co dinh chiem
+   78px day viewport (cao 68px + bottom: 10px) nen form sticky
+   bottom: 0 cu bi tab che kin nut "Gửi" (do o 390px: nut
+   [306,769,72,52], tab [10,766,370,68], tab z-index 10 >
+   form 1). Day form len 90px = 78px + khe 12px, nut nam tren
+   mep tren tab. Chi ap mobile vi desktop tab khong co dinh
+   (in-flow) — desktop giu bottom: 0. */
+@media (max-width: 699px) {
+  .center-chat-form { bottom: 90px; }
+}
 .center-chat-form textarea { min-height: 48px; }
 /* 360px: textarea 1 dòng riêng, hàng nút: Đính kèm trái, Gửi phải. */
 .chat-form-row {
@@ -437,6 +454,17 @@ textarea { min-height: 90px; font-family: inherit; }
 /* Hop chat co dinh 65vh, toi thieu 400px (dien thoai <= 720px:
    50vh/320px), 1 co, khong nut phong to/thu nho. */
 .center-chat-box-wrap { position: relative; }
+/* (SUA B2) Neo vien + nut vao TRONG hop chat cuon duoc: wrapper
+   cao 0, dinh vao day khung hien thi cua hop khi cuon (sticky,
+   bottom 0) — nam o cuoi hop chat; cach neo nay khong phu thuoc
+   bat ky to tien nao co position nen khong the troi khoi khung
+   chat khi cuon trang chinh (cach neo absolute vao wrap cu da troi
+   tren PC that). Wrapper khong chiem cho (height: 0) va khong chan
+   bam (pointer-events: none); 2 nut ben trong bat lai auto. */
+.center-chat-anchor {
+  position: sticky; bottom: 0; height: 0; pointer-events: none;
+  z-index: 2;
+}
 .center-chat-box {
   height: 65vh; min-height: 400px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: 16px;
@@ -453,7 +481,7 @@ textarea { min-height: 90px; font-family: inherit; }
    cham). */
 .center-new-pill {
   position: absolute; left: 50%; bottom: 68px;
-  transform: translateX(-50%); z-index: 2;
+  transform: translateX(-50%); z-index: 2; pointer-events: auto;
   background: var(--wine); color: #fff; border: none; border-radius: 16px;
   padding: 8px 16px; font-size: 14px; font-weight: 500;
   min-height: 36px; min-width: 0;
@@ -462,6 +490,7 @@ textarea { min-height: 90px; font-family: inherit; }
    dau da doc. */
 .center-scroll-bottom {
   position: absolute; right: 12px; bottom: 12px; z-index: 2;
+  pointer-events: auto;
   width: 44px; height: 44px; min-width: 44px; min-height: 44px;
   padding: 0; border-radius: 50%; background: var(--surface);
   border: 1px solid var(--border); color: var(--accent); font-size: 20px;
@@ -537,6 +566,19 @@ APP_JS = """
       /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
   }
 
+  // (P0 CSP — doi SỬA LỖI UI, 21/11/2026) To mau cham tai khoan
+  // (.msg-color-dot) tu thuoc tinh data-color qua CSSOM: gan qua
+  // el.style.* bang JS KHONG bi CSP chan (chi thuoc tinh style
+  // trong HTML moi bi chan). Goi sau moi lan noi dung chua cham
+  // mau duoc render/chen vao trang — xem 4 diem goi ben duoi.
+  function paintColorDots(root) {
+    if (!root || !root.querySelectorAll) { return; }
+    root.querySelectorAll(".msg-color-dot[data-color]")
+      .forEach(function (dot) {
+        dot.style.background = dot.getAttribute("data-color");
+      });
+  }
+
   function refreshOne(el, delayMs, failures) {
     var url = el.getAttribute("data-fragment-url");
     if (!url) { return; }
@@ -550,13 +592,106 @@ APP_JS = """
       schedule(el, delayMs, failures);
       return;
     }
+    // P1 (sua sau audit PC): luu gia tri cac o nhap trong fragment
+    // + id phan tu dang focus truoc khi thay innerHTML, de poll
+    // khong xoa chu nguoi dung vua go nhung chua gui (vi du go
+    // "xin chao" roi blur — truoc day node #q-filter bi thay moi
+    // nen gia tri ve rong). Dang go (focus) thi da duoc hasFocus()
+    // bo qua o tren, khong toi day.
+    var savedValues = {};
+    var savedFocusId = null;
+    // (NS-01, nhom B 21/11/2026) Luu them vi tri con tro + tick
+    // checkbox: code cu chi luu value nen sau poll con tro ve dau/
+    // cuoi o, va 2 checkbox khong co id (need_owner, overdue) mat
+    // tick khi poll toi. Checkbox khoa theo name (khong them id de
+    // khoi lo trung id); con tro chi luu cho o nhap text.
+    var savedCarets = {};
+    var savedChecked = {};
+    var formFields = el.querySelectorAll("input, select, textarea");
+    for (var i = 0; i < formFields.length; i++) {
+      if (formFields[i].id) {
+        savedValues[formFields[i].id] = formFields[i].value;
+        // Guard (a): doc selectionStart co the nem InvalidStateError
+        // voi input checkbox/hidden/file — boc try/catch, chi luu
+        // khi doc duoc so (input text/search/textarea).
+        try {
+          if (typeof formFields[i].selectionStart === "number") {
+            savedCarets[formFields[i].id] = {
+              start: formFields[i].selectionStart,
+              end: formFields[i].selectionEnd,
+            };
+          }
+        } catch (e) { /* o nhap khong ho tro chon text: bo qua */ }
+      }
+      if (formFields[i].type === "checkbox" && formFields[i].name) {
+        savedChecked[formFields[i].name] = formFields[i].checked;
+      }
+    }
+    var activeEl = document.activeElement;
+    if (activeEl && el.contains(activeEl) && activeEl.id) {
+      savedFocusId = activeEl.id;
+    }
     fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then(function (resp) {
         if (!resp.ok) { throw new Error("HTTP " + resp.status); }
         return resp.text();
       })
       .then(function (html) {
+        if (hasFocus(el)) {
+          // Nguoi dung bat dau go trong luc fetch dang chay: de yen,
+          // khong thay fragment de khoi xoa chu vua go.
+          schedule(el, delayMs, failures);
+          return;
+        }
         el.innerHTML = html;
+        paintColorDots(el);
+        // Khoi phuc gia tri + focus da luu truoc khi thay fragment.
+        for (var savedId in savedValues) {
+          var savedNode = el.querySelector("#" + savedId);
+          if (savedNode && "value" in savedNode) {
+            if (savedNode.tagName === "SELECT") {
+              var hasOption = false;
+              for (var j = 0; j < savedNode.options.length; j++) {
+                if (savedNode.options[j].value === savedValues[savedId]) {
+                  hasOption = true;
+                  break;
+                }
+              }
+              if (hasOption) { savedNode.value = savedValues[savedId]; }
+            } else {
+              savedNode.value = savedValues[savedId];
+            }
+          }
+        }
+        if (savedFocusId) {
+          var focusNode = el.querySelector("#" + savedFocusId);
+          if (focusNode && focusNode.focus) { focusNode.focus(); }
+        }
+        // (NS-01) Khoi phuc tick checkbox theo name (tra cuu trong
+        // fragment — el.querySelector — nhu guard (d), khong dung
+        // document.getElementById toan cuc).
+        var savedBoxes = el.querySelectorAll('input[type="checkbox"]');
+        for (var k = 0; k < savedBoxes.length; k++) {
+          if (savedBoxes[k].name
+              && savedBoxes[k].name in savedChecked) {
+            savedBoxes[k].checked = savedChecked[savedBoxes[k].name];
+          }
+        }
+        // (NS-01) Khoi phuc vi tri con tro sau khi da gan lai value
+        // (gan value dat lai selection ve cuoi) va focus; kep trong
+        // do dai value moi de khong vuot qua cuoi o.
+        for (var caretId in savedCarets) {
+          var caretNode = el.querySelector("#" + caretId);
+          if (caretNode && caretNode.setSelectionRange) {
+            try {
+              var caretLen = caretNode.value
+                ? caretNode.value.length : 0;
+              caretNode.setSelectionRange(
+                Math.min(savedCarets[caretId].start, caretLen),
+                Math.min(savedCarets[caretId].end, caretLen));
+            } catch (e) { /* o moi khong ho tro chon text */ }
+          }
+        }
         el.setAttribute("data-last-ok", String(Date.now()));
         var stamp = document.getElementById("data-freshness");
         if (stamp) {
@@ -604,13 +739,19 @@ APP_JS = """
   // [data-chat-meta] mang data-has-more/data-oldest-seq/
   // data-newest-seq; cac bong bóng la cac the .msg (moi bong bóng
   // co data-seq).
+  // (SUA B1 — phong thu them) Bo qua node .notice ("Chưa có tin
+  // nhắn nào.") khi tach bong bóng: fragment delta khong bao gio
+  // duoc them o trong vao hop chat, ke ca khi may chu cu vo tinh
+  // tra o trong.
   function chatParseFragment(html) {
     var tmp = document.createElement("div");
     tmp.innerHTML = html;
     var meta = tmp.querySelector("[data-chat-meta]");
     var bubbles = [];
     Array.prototype.forEach.call(tmp.childNodes, function (node) {
-      if (node.nodeType === 1 && !node.hasAttribute("data-chat-meta")) {
+      if (node.nodeType === 1 && !node.hasAttribute("data-chat-meta")
+          && !(node.classList
+               && node.classList.contains("notice"))) {
         bubbles.push(node);
       }
     });
@@ -630,7 +771,20 @@ APP_JS = """
     var loadingOlder = false;
     var pill = document.getElementById("center-new-pill");
     var toBottomBtn = document.getElementById("center-scroll-bottom");
+    // (SUA B2) Wrapper sticky chua vien + nut — LUON la con cuoi
+    // cua hop chat; bong bóng moi chen TRUOC no, khong append
+    // thang vao hop nua.
+    var chatAnchor = document.getElementById("center-chat-anchor");
     var typingLine = document.getElementById("center-typing-line");
+
+    // (SUA B1 — phong thu them) Khi co bong bóng that duoc them
+    // vao hop thi xoa moi o trong (.notice) dang co trong hop:
+    // phong co tin thi khong con o trong nao.
+    function removeEmptyNotice() {
+      box.querySelectorAll(".notice").forEach(function (el) {
+        el.remove();
+      });
+    }
 
     function distanceToBottom() {
       return box.scrollHeight - box.scrollTop - box.clientHeight;
@@ -727,7 +881,10 @@ APP_JS = """
               frag.appendChild(node);
             });
             box.insertBefore(frag, box.firstChild);
+            paintColorDots(box);
             box.scrollTop += box.scrollHeight - prevHeight;
+            // (SUA B1) Co bong bóng that -> xoa o trong neu con.
+            removeEmptyNotice();
             trimBubbles();
             applySenderFilter();
           }
@@ -834,7 +991,17 @@ APP_JS = """
             });
             // Tin moi chi xuat hien o cuoi hop: tin dang doc o dau
             // hop khong nhay (NT-2.6).
-            box.appendChild(frag);
+            // (SUA B2) Chen bong bóng moi TRUOC wrapper sticky
+            // (chatAnchor) de wrapper LUON la con cuoi cua hop;
+            // chi khi khong co wrapper (trang cu) moi append thang.
+            if (chatAnchor) {
+              box.insertBefore(frag, chatAnchor);
+            } else {
+              box.appendChild(frag);
+            }
+            // (SUA B1) Co bong bóng that -> xoa o trong neu con.
+            removeEmptyNotice();
+            paintColorDots(box);
             if (parsed.meta) {
               var nextNewest = parseInt(
                 parsed.meta.getAttribute("data-newest-seq") || "", 10);
@@ -852,6 +1019,71 @@ APP_JS = """
               // toi da 1 lan danh dau). Chu nhan soat lai sang mai;
               // neu doi y thi xoa khoi nay (chi giu tu cuon, khong
               // tu danh dau).
+              markRead(newestSeq);
+            }
+          })
+          .catch(function () { /* doi chu ky sau */ });
+      } else {
+        // (D5/NS-02, nhom B 21/11/2026) Phong mo ra dang RONG thi
+        // newestSeq = null nen nhanh delta o tren khong bao gio
+        // chay — tin moi ve khong hien cho toi khi tai lai trang.
+        // Fetch fragment THUONG (khong after_seq): tra N tin gan
+        // nhat + meta co newestSeq moi. Hop dang rong nen chi chen
+        // tin CHUA CO (chong trung lap theo data-seq — phong khi
+        // fragment tra lai tin da hien); co bong bóng moi thi xoa
+        // o trong (B1) + cap nhat newestSeq/oldestSeq. Cung 1 duong
+        // code cho ca phong rieng (dm:) va phong chung (chung):
+        // chi khac tham so room.
+        var emptyUrl = "/fragments/center-chat?room=" +
+          encodeURIComponent(room);
+        fetch(emptyUrl, { credentials: "same-origin", cache: "no-store" })
+          .then(function (resp) {
+            if (!resp.ok) { throw new Error("HTTP " + resp.status); }
+            return resp.text();
+          })
+          .then(function (html) {
+            var parsed = chatParseFragment(html);
+            if (!parsed.bubbles.length) { return; }
+            // Chong trung lap: chi giu bong bóng co seq chua co
+            // trong hop (fragment thuong tra lai ca danh sach).
+            var seenSeqs = {};
+            box.querySelectorAll(".msg[data-seq]").forEach(function (m) {
+              seenSeqs[m.getAttribute("data-seq")] = true;
+            });
+            var fresh = parsed.bubbles.filter(function (node) {
+              var s = node.getAttribute
+                ? node.getAttribute("data-seq") : null;
+              return s === null || !seenSeqs[s];
+            });
+            if (!fresh.length) { return; }
+            var wasNear = nearBottom();
+            var frag = document.createDocumentFragment();
+            fresh.forEach(function (node) {
+              frag.appendChild(node);
+            });
+            // (SUA B2) Chen TRUOC wrapper sticky nhu nhanh delta.
+            if (chatAnchor) {
+              box.insertBefore(frag, chatAnchor);
+            } else {
+              box.appendChild(frag);
+            }
+            // (SUA B1) Co bong bóng that -> xoa o trong neu con.
+            removeEmptyNotice();
+            paintColorDots(box);
+            if (parsed.meta) {
+              var nextNewest = parseInt(
+                parsed.meta.getAttribute("data-newest-seq") || "", 10);
+              if (!isNaN(nextNewest)) { newestSeq = nextNewest; }
+              var nextOldest = parseInt(
+                parsed.meta.getAttribute("data-oldest-seq") || "", 10);
+              if (!isNaN(nextOldest)) { oldestSeq = nextOldest; }
+              hasMore = parsed.meta.getAttribute("data-has-more")
+                === "true";
+            }
+            trimBubbles();
+            applySenderFilter();
+            if (wasNear) {
+              box.scrollTop = box.scrollHeight;
               markRead(newestSeq);
             }
           })
@@ -914,6 +1146,17 @@ APP_JS = """
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    // To mau cac cham tai khoan da render tinh tu server (khung
+    // chat tinh trang chi tiet viec + dong mau chat trang Tai khoan).
+    paintColorDots(document);
+    // (P0 CSP — doi SỬA LỖI UI, 21/11/2026) Nut "Tai lai" canh chip
+    // du lieu cu: bam thi tai lai trang de thu lay du lieu tuoi.
+    var staleReload = document.getElementById("stale-reload");
+    if (staleReload) {
+      staleReload.addEventListener("click", function () {
+        window.location.reload();
+      });
+    }
     var nodes = document.querySelectorAll("[data-fragment-url]");
     nodes.forEach(function (el) {
       var delay = parseInt(el.getAttribute("data-interval") || "5000", 10);

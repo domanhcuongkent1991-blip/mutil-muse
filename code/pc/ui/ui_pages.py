@@ -107,10 +107,12 @@ def layout(title, body, csrf_token=None, show_topbar=True, body_class="",
                 % esc(csrf_token)
             )
         topbar = (
-            '<div class="topbar"><span class="brand">Bot của tôi</span>'
+            '<div class="topbar">'
             '<span class="fresh" id="data-freshness"></span>'
-            '<span class="fresh" id="stale-warning" style="display:none">'
+            '<span class="fresh is-hidden" id="stale-warning">'
             '<span class="chip yellow">Dữ liệu có thể đã cũ</span></span>'
+            '<button type="button" id="stale-reload" class="small">'
+            "Tải lại</button>"
             '<form class="inline" method="post" action="/logout">'
             "%s"
             '<button class="small" type="submit">Đăng xuất</button>'
@@ -159,7 +161,7 @@ def login_page_html(error=None, login_csrf=""):
         '<label for="password">Mật khẩu</label>'
         '<input type="password" id="password" name="password" '
         'autocomplete="current-password" required>'
-        '<div style="margin-top:16px">'
+        '<div class="mt-16">'
         '<button class="primary-action" type="submit">Đăng nhập</button>'
         "</div></form>"
         "<p class=\"hint\">Quá 5 lần sai trong 15 phút sẽ bị khóa thử "
@@ -391,6 +393,12 @@ def bot_card_html(summary, csrf_token, compact=False):
     hidden_dual = summary_dual_fetch_hidden(summary)
     for alert in summary.get("alerts") or []:
         if alert.get("key") == "dual-fetch" and hidden_dual:
+            continue
+        # L7: cảnh báo "sync" không hiện chip trên từng thẻ nữa —
+        # gom thành 1 banner chung trên node bot-cards (xem
+        # sync_slow_banner_html); cảnh báo gốc trong tab Cảnh báo
+        # vẫn giữ nguyên (đường render riêng, không qua đây).
+        if alert.get("key") == "sync":
             continue
         alerts += (
             '<div><span class="chip %s">%s</span></div>'
@@ -664,11 +672,38 @@ def _tailscale_line(tailscale, summaries):
     )
 
 
+def sync_slow_banner_html(summaries):
+    """L7: 1 banner chung cho các bot đồng bộ trả lời chậm (ngưỡng
+    1800 s không đổi, nội dung giữ đúng cảnh báo gốc) — thay cho
+    chip "sync" lặp trên từng thẻ bot. Trả "" khi không có bot nào
+    chậm; đếm trên chính tab đang render (Tất cả: 5/5, Zalo/
+    Telegram: chỉ bot của nền tảng đó)."""
+    total = len(summaries or [])
+    slow = 0
+    for summary in summaries or []:
+        alerts = summary.get("alerts") or []
+        if any(isinstance(a, dict) and a.get("key") == "sync"
+               for a in alerts):
+            slow += 1
+        elif (summary.get("sync") or {}).get("fallback"):
+            slow += 1
+    if not slow:
+        return ""
+    return (
+        '<div class="banner">Đồng bộ trả lời chậm hơn 30 phút — '
+        "%d/%d bot đang hiện giao diện rút gọn (chỉ tin đến, không "
+        "hiện trả lời cũ như mới).</div>" % (slow, total)
+    )
+
+
 def overview_fragment_html(summaries, feed, unseen_alerts, tailscale,
                            csrf_token, stats, names, filters,
                            accounts=None, prefs=None, next_url=None,
-                           node_summaries=None):
-    """Fragment tab Tất cả (V2 §1): dải số + thẻ gọn + hoạt động."""
+                           node_summaries=None, sync_banner=""):
+    """Fragment tab Tất cả (V2 §1): dải số + thẻ gọn + hoạt động.
+
+    ``sync_banner``: banner chung L7 (do _dashboard_fragment tính
+    từ cùng danh sách summaries), đặt ngay trên node bot-cards."""
     banner = ""
     if unseen_alerts:
         banner = (
@@ -719,13 +754,14 @@ def overview_fragment_html(summaries, feed, unseen_alerts, tailscale,
     return (
         "%s%s%s"
         "%s"
-        "%s%s%s"
+        "%s%s%s%s"
     ) % (
         _tailscale_line(tailscale, summaries),
         banner,
         all_actions,
         stats_node,
         account_link,
+        sync_banner,
         cards_node,
         activity_node,
     )
@@ -733,9 +769,13 @@ def overview_fragment_html(summaries, feed, unseen_alerts, tailscale,
 
 def platform_fragment_html(platform, summaries, feed, csrf_token, stats,
                            names, filters, accounts=None, prefs=None,
-                           next_url=None, node_summaries=None):
+                           next_url=None, node_summaries=None,
+                           sync_banner=""):
     """Fragment tab Zalo/Telegram (V2 §1): dải số riêng + thẻ đầy đủ
-    + hoạt động của nền tảng đó. Bot của nền tảng khác không hiện."""
+    + hoạt động của nền tảng đó. Bot của nền tảng khác không hiện.
+
+    ``sync_banner``: banner chung L7 (do _dashboard_fragment tính
+    từ cùng danh sách summaries), đặt ngay trên node bot-cards."""
     cards = "".join(bot_card_html(s, csrf_token) for s in summaries)
     if not cards:
         cards = (
@@ -774,12 +814,13 @@ def platform_fragment_html(platform, summaries, feed, csrf_token, stats,
         badge=(len(feed) if prefs is None or not prefs.get("activity")
                else None))
     return (
-        "%s%s%s%s%s"
+        "%s%s%s%s%s%s"
     ) % (
         all_actions,
         stats_node,
         '<div class="hint">Quota ước tính hiện trên từng thẻ bot, '
         "không cộng gộp.</div>",
+        sync_banner,
         cards_node,
         activity_node,
     )
@@ -1050,22 +1091,28 @@ def _alert_event_row_html(event, names, platforms):
 
 
 def dashboard_page_html(fragment_html, csrf_token, fragment_url=None,
-                        static_html=""):
+                        static_html="", notice_banner=""):
     """Trang chính đầy đủ, fragment tự làm tươi mỗi 5 giây.
 
     ``fragment_url`` mang đủ tham số tab/lọc hiện tại để polling giữ
     nguyên chế độ xem; mặc định là fragment tab Tất cả. ``static_html``
     render NGOÀI div fragment (không bị polling 5 giây ghi đè) — dùng
     cho khung chat của tab Chat + form tạo việc của tab Trung tâm
-    (T3-CH-06)."""
+    (T3-CH-06).
+
+    (L6, 21/11) ``notice_banner``: HTML banner da render san (lop
+    ``.banner``), dat NGOAI div fragment — polling khong xoa; chi
+    hien khi URL co ``notice`` hop le (query param 1 lan), tai lai
+    trang khong co ``notice`` thi khong hien lai."""
     if fragment_url is None:
         fragment_url = "/fragments/dashboard"
     body = (
         "<h1>Bot của tôi</h1>"
+        "%s"
         '<div data-fragment-url="%s" '
         'data-interval="5000">%s</div>'
         "%s"
-    ) % (esc(fragment_url), fragment_html, static_html)
+    ) % (notice_banner, esc(fragment_url), fragment_html, static_html)
     return layout("Bot của tôi", body, csrf_token=csrf_token,
                   body_class="has-tabs")
 
@@ -1628,7 +1675,7 @@ def center_message_bubble_html(message, account_names, task_titles=None,
     colors = account_colors or {}
     color = colors.get(sender) or (
         "#57534e" if sender == "owner" else "#475569")
-    color_dot = ('<span class="msg-color-dot" style="background:%s" '
+    color_dot = ('<span class="msg-color-dot" data-color="%s" '
                  'title="%s"></span>'
                  % (esc(color),
                     esc(account_names.get(sender, sender))))
@@ -1646,14 +1693,18 @@ def center_message_bubble_html(message, account_names, task_titles=None,
 
 
 def center_chat_html(messages, account_names, task_titles=None,
-                     account_colors=None):
+                     account_colors=None, show_empty_notice=True):
     """Danh sach bong bóng chat (khong tieu de, khong link xem them)
-    — dung trong fragment chat va lan render tinh ban dau."""
+    — dung trong fragment chat va lan render tinh ban dau.
+    (SUA B1) ``show_empty_notice=False``: phong rong thi tra ve
+    chuoi rong, khong render o "Chưa có tin nhắn nào." — dung cho
+    fragment delta (after_seq/before_seq): o trong chi hien o lan
+    render tinh ban dau, polling khong duoc them o moi chu ky."""
     rows = "".join(
         center_message_bubble_html(message, account_names, task_titles,
                                    account_colors)
         for message in messages)
-    if not rows:
+    if not rows and show_empty_notice:
         rows = '<div class="notice">Chưa có tin nhắn nào.</div>'
     return rows
 
@@ -1684,8 +1735,9 @@ def center_room_list_html(rooms, current_room, unread_counts,
         label = entry["display_name"]
         if entry.get("account_id") is None:
             label = "Khung chung"
-        else:
-            label = "Riêng: %s" % label
+        # (L5, 21/11 — quyet chu nhan) Danh sach phong khong con
+        # tien to "Riêng:" — ten tai khoan dung mot minh da du
+        # phan biet; tien to chi con o header phong dang mo.
         badge = ""
         count = unread_counts.get(room, 0)
         if count:
@@ -1727,7 +1779,8 @@ def center_room_list_html(rooms, current_room, unread_counts,
 def center_chat_fragment_html(messages, account_names, task_titles,
                               chat_limit, has_more, room="chung",
                               oldest_seq=None, newest_seq=None,
-                              account_colors=None):
+                              account_colors=None,
+                              show_empty_notice=True):
     """Fragment chat rieng (v0.2.5, Q-C1/Q-C2 — viet lai v0.6.0, T3i):
     chi danh sach bong bóng + 1 the meta an (``data-chat-meta`` mang
     ``data-has-more``/``data-oldest-seq``/``data-newest-seq``) de JS
@@ -1736,9 +1789,13 @@ def center_chat_fragment_html(messages, account_names, task_titles,
     fragment de khong mat ban nhap khi polling (thay T3-CH-06).
     KHONG con nut/link "Xem thêm" (cuon len toi dau hop thi tu tai
     them). ``has_more`` = False nghia la da toi tin cu nhat con luu
-    (JS hien dong "Đã tới tin cũ nhất còn lưu…")."""
+    (JS hien dong "Đã tới tin cũ nhất còn lưu…").
+    (SUA B1) Fragment delta (``show_empty_notice=False``) voi 0 tin
+    moi chi tra the meta, KHONG tra o trong — polling khong duoc
+    them 1 o trong moi 5 giay vao hop chat."""
     rows = center_chat_html(messages, account_names, task_titles,
-                            account_colors)
+                            account_colors,
+                            show_empty_notice=show_empty_notice)
     meta = (
         '<div data-chat-meta data-has-more="%s" data-oldest-seq="%s" '
         'data-newest-seq="%s" hidden></div>'
@@ -1828,12 +1885,20 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
         'data-center-chat-box data-room="%s" '
         'data-oldest-seq="%s" data-newest-seq="%s" '
         'data-has-more="%s" data-archived="%s">'
-        "%s%s</div>"
+        "%s%s"
+        # (SUA B2) Vien "N tin moi" + nut "Ve cuoi" la con CUOI cua
+        # hop chat cuon duoc, boc trong wrapper sticky cao 0
+        # (position: sticky; bottom: 0) — neo vao trong khung chat,
+        # khong phu thuoc to tien co position nen khong the troi
+        # khoi khung khi cuon trang chinh. JS giu wrapper LUON la
+        # con cuoi: bong bóng moi chen TRUOC wrapper.
+        '<div class="center-chat-anchor" id="center-chat-anchor">'
         '<button type="button" class="center-new-pill" '
         'id="center-new-pill" hidden></button>'
         '<button type="button" class="center-scroll-bottom" '
         'id="center-scroll-bottom" title="Về cuối" '
         'aria-label="Về cuối">↓</button>'
+        "</div></div>"
         "</div>"
         "%s"
         "</div>"
@@ -1863,21 +1928,25 @@ def center_chat_form_html(csrf_token, room="chung", draft="",
     (NS-09). (v0.4.0, T3e) Form mang truong an ``client_key`` (sinh
     1 lan luc render) de dedupe gui lai form sau loi (§3.6).
     (v0.6.0, T3i — D8, da thay bang schema v4 o T3l) O chon "Gửi cho:":
-    "Tất cả" (to_account=None) hoac NHIEU tai khoan cung luc
-    (to_account la DANH SACH, toi da 5 nguoi, ke ca khi chi chon 1
-    nguoi). Gioi han D8-v3 (chi Tat ca hoac dung 1 tai khoan, chuoi
-    v3) da bi T3l thay the.
+    "Gửi cho tất cả tài khoản" (to_account=None) hoac NHIEU tai khoan
+    cung luc (to_account la DANH SACH, toi da 5 nguoi, ke ca khi chi
+    chon 1 nguoi). Gioi han D8-v3 (chi Tat ca hoac dung 1 tai khoan,
+    chuoi v3) da bi T3l thay the.
     (v0.6.0, T3l — D8 + schema v4, C-18) O chon "Gửi cho:" nay cho
     chon NHIEU tai khoan cung luc: ``<select multiple>`` — giu phim
     Ctrl (Windows/Linux) hoac Cmd (Mac) roi bam them tung tai khoan
-    de chon them; khong chon gi (hoac chi chon "Tất cả") = gui cho
-    tat ca. May chu doc moi gia tri da chon, truyen ``to_account``
-    thanh DANH SACH (toi da 5 nguoi); "owner"/khong ton tai -> 400."""
+    de chon them; khong chon gi (hoac chi chon "Gửi cho tất cả tài
+    khoản") = gui cho tat ca. May chu doc moi gia tri da chon, truyen
+    ``to_account`` thanh DANH SACH (toi da 5 nguoi); "owner"/khong
+    ton tai -> 400."""
     if archived:
         return (
             '<div class="notice">Phòng lưu trữ — chỉ xem lại tin cũ, '
             "không gửi thêm được.</div>")
-    options = ['<option value="">Tất cả</option>']
+    # (L5, 21/11 — quyet chu nhan) Nhan mac dinh cua o chon la
+    # "Gửi cho tất cả tài khoản" (khong con "Tất cả" dung mot minh
+    # de tranh lap nhan voi tab "Tất cả").
+    options = ['<option value="">Gửi cho tất cả tài khoản</option>']
     for account_id, name in (recipients or []):
         options.append('<option value="%s">%s</option>'
                        % (esc(account_id), esc(name)))
@@ -3150,7 +3219,7 @@ def bot_form_html(mode, values, errors, csrf_token, bot_id=None,
         "</select>"
         '<div class="hint">Tắt privacy: phải xóa bot khỏi nhóm và thêm '
         "lại mới có hiệu lực; chỉ tắt khi có lý do rõ và nhóm biết (D4).</div>"
-        '<div style="margin-top:16px">'
+        '<div class="mt-16">'
         '<button class="primary-action" type="submit">%s</button>'
         ' <a class="btn" href="/">Hủy</a></div>'
         "</form>"
@@ -3351,7 +3420,7 @@ def _account_center_section_html(account_id, info, csrf_token):
         discussion_on = True
     discussion_line = (
         '<div class="meta">Thảo luận: %s · Màu chat: '
-        '<span class="msg-color-dot" style="background:%s"></span>%s'
+        '<span class="msg-color-dot" data-color="%s"></span>%s'
         "</div>"
         % ("Đang bật" if discussion_on else "Đã tắt",
            esc(color or "#475569"), esc(color or "—")))
