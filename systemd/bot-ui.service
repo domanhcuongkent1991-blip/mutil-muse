@@ -1,0 +1,22 @@
+[Unit]
+Description=Web UI da-bot (cong 8787, loopback) — multibot V2
+After=network-online.target
+Wants=network-online.target
+# Ham vong lap khoi dong: StartLimit* CHI co tac dung o [Unit].
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+Environment=MULTIBOT_BASE_DIR=__DIR__
+Environment=PYTHONPATH=__DIR__/code
+# UI CHI bind loopback: truy cap tu xa qua Tailscale Serve HTTPS.
+# Unit tu choi chay khi chua co file hash mat khau (set_ui_password.py).
+ExecStart=/usr/bin/python3 __DIR__/code/pc/ui/ui_main.py --root __DIR__ --port 8787 --bind 127.0.0.1
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Receiver dong bo tra loi da-bot (cong 8766) — multibot V2
+After=network-online.target
+Wants=network-online.target
+# Ham vong lap khoi dong: StartLimit* CHI co tac dung o [Unit].
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+Environment=MULTIBOT_BASE_DIR=__DIR__
+Environment=PYTHONPATH=__DIR__/code
+ExecStart=/usr/bin/python3 __DIR__/code/pc/sync_receiver/receiver_main.py --root __DIR__ --port 8766 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

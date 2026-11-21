@@ -1,0 +1,9 @@
+[Unit]
+# Duoc multibot-core.target keo (Wants) khi START. Doc registry.json va
+# bat tai@<bot_id> cho MOI bot enabled — tu dong theo so bot, khong can
+# sua target khi them bot moi.
+Description=Multibot tai enabler — bat tai@ cho tat ca bot enabled
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/cuongkent/multibot/systemd/tai_enabler.py
+TimeoutStartSec=60

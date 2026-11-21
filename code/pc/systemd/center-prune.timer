@@ -1,0 +1,14 @@
+[Unit]
+Description=Don dep kho trung tam moi ngay 21:00 — multibot V2 (T3f, v0.5.0)
+# Hen gio chay theo GIO DIA PHUONG cua PC (21:00 gio Asia/Saigon —
+# agent PC kiem tra `timedatectl` khi cai timer, xem PLAN T3f tieu
+# chi 4). Persistent=true: PC tat dung gio don thi mo may lai se
+# chay bu (Q6) — lenh boc tu kiem tra co lo ky nao khong.
+
+[Timer]
+OnCalendar=*-*-* 21:00:00
+Persistent=true
+Unit=center-prune.service
+
+[Install]
+WantedBy=timers.target

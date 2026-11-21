@@ -1,0 +1,14 @@
+# Repo git local CHỈ track code/ + systemd/ (chốt với chủ nhân 21/11/2026).
+# Mọi entry khác của ~/multibot nằm ngoài git — kể cả khi lỡ tay add.
+# Bẫy: secrets/, config/, data/, ui-config/, ops/, backups/, locks/,
+# registry*.json, gateway-fetch-state.json là vùng nhạy cảm/state chạy.
+# Lưu ý git: KHÔNG viết comment cùng dòng với pattern (git không hỗ trợ).
+
+/*
+!/code/
+!/systemd/
+!/.gitignore
+
+# Bytecode Python tự sinh
+__pycache__/
+*.pyc

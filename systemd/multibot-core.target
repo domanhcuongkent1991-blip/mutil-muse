@@ -1,0 +1,11 @@
+[Unit]
+# Cong tac tong multibot — START: bat gateway + receiver + tai-enabler
+# (enabler doc registry va bat tai@ cho MOI bot enabled — tu dong theo so
+# bot moi them, khong can sua file nay khi them bot).
+# STOP: .bat goi "stop target tai@*.service" de tat ca (pattern dung voi
+# cac unit dang loaded).
+# bot-ui (giao dien web) dat NGOAI target de luon song.
+# Target KHONG enable vao boot: cac unit rieng van tu bat khi WSL boot
+# (hanh vi tu khoi dong hien tai giu nguyen).
+Description=Multibot core cong tac tong (gateway + receiver + tai enabler)
+Wants=multibot-gateway.service multibot-sync-receiver.service multibot-tai-enabler.service

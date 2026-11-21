@@ -1,0 +1,28 @@
+[Unit]
+Description=Tai da-bot %i — poller rieng tung bot (multibot V2)
+After=network-online.target
+Wants=network-online.target
+# Ham vong lap khoi dong: StartLimit* CHI co tac dung o [Unit] (dat o
+# [Service] systemd se bo qua — loi that gay vong lap 79 lan 16/11).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+Environment=MULTIBOT_BASE_DIR=__DIR__
+Environment=PYTHONPATH=__DIR__/code
+# %i la bot_id (vi du: tai@bot-a.service -> bot_id "bot-a").
+# Tham so --bot-id/--base-dir phai khop voi hop dong dong lenh cua ear_main.py.
+# PYTHONPATH tro ve code/ de import pc.* va shared.* resolve duoc (quyet
+# dong goi vong 3: install.sh copy toan bo cay shared/ + pc/ vao code/).
+ExecStart=/usr/bin/python3 __DIR__/code/pc/ear/ear_main.py --bot-id %i --base-dir __DIR__
+Restart=on-failure
+RestartSec=10
+# Ma 42 = xung dot poller/webhook cua Telegram (SPEC F5): khong restart lap,
+# de nguoi van hanh don dep roi khoi dong lai tay.
+RestartPreventExitStatus=42
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Don dep kho trung tam theo lich (lenh boc prune_runner) — multibot V2 (T3f, v0.5.0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DIR__
+Environment=MULTIBOT_BASE_DIR=__DIR__
+Environment=PYTHONPATH=__DIR__/code
+ExecStart=/usr/bin/python3 -m pc.center.prune_runner --root __DIR__
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
