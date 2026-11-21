@@ -123,7 +123,18 @@ PRUNE_NEAR_FULL_MAX = 0.95  # SPEC TT19
 # toan bo — SPEC TT19/DESIGN §11; khoa la DA CO trong file thi giu
 # nguyen khi ghi lai — GC-02).
 CENTER_CONFIG_KEYS = ("prune_day", "prune_retention_days",
-                      "prune_near_full_fraction", "overdue_severe_hours")
+                      "prune_near_full_fraction", "overdue_severe_hours",
+                      "shared_links_open_to_all")
+# (Link chung, D-LC-16 — 21/11) Co "mo Link chung cho moi tai
+# khoan", bool, mac dinh False. DIEN GIAI THEO DAP AN DA DUYET
+# 17:31 21/11 (nghia (c) + luu san co): co DUOC LUU SAN de sau
+# nay gan hanh vi ma khong phai doi schema, nhung CHUA GAN hanh
+# vi mo rong nao — route them/xoa + render form/nut xoa lam viec
+# nhu cu bat ke co true/false (D-LC-15/D-LC-17: cho cam san —
+# placeholder, chua phai cong quyen that vi session UI khong mang
+# account_id, xem §5.1 thiet ke). Doi sau khoi tuong co da co tac
+# dung.
+DEFAULT_SHARED_LINKS_OPEN_TO_ALL = False
 PRUNE_TRIGGER_VALUES = ("schedule", "near_full", "manual")
 
 # --- Kho file dinh kem (v0.2.5, Q-C7 — SPEC TT16, doc 10 §5.7) --------
@@ -627,7 +638,9 @@ def load_center_config(root):
               "overdue_severe_hours": DEFAULT_OVERDUE_SEVERE_HOURS,
               "prune_day": DEFAULT_PRUNE_DAY,
               "prune_retention_days": DEFAULT_PRUNE_RETENTION_DAYS,
-              "prune_near_full_fraction": DEFAULT_PRUNE_NEAR_FULL_FRACTION}
+              "prune_near_full_fraction": DEFAULT_PRUNE_NEAR_FULL_FRACTION,
+              "shared_links_open_to_all":
+                  DEFAULT_SHARED_LINKS_OPEN_TO_ALL}
     if isinstance(data, dict):
         severe = data.get("overdue_severe_hours")
         if isinstance(severe, (int, float)) and not isinstance(severe, bool) \
@@ -648,6 +661,9 @@ def load_center_config(root):
                 and not isinstance(fraction, bool) \
                 and PRUNE_NEAR_FULL_MIN <= fraction <= PRUNE_NEAR_FULL_MAX:
             config["prune_near_full_fraction"] = float(fraction)
+        flag = data.get("shared_links_open_to_all")
+        if isinstance(flag, bool):
+            config["shared_links_open_to_all"] = flag
     return config
 
 
@@ -685,6 +701,14 @@ def validate_center_config_updates(updates):
                     or not OVERDUE_SEVERE_HOURS_MIN <= raw \
                     <= OVERDUE_SEVERE_HOURS_MAX:
                 return None, "số giờ quá hạn phải trong khoảng 1–168"
+            clean[key] = raw
+        elif key == "shared_links_open_to_all":
+            # (Link chung, D-LC-16) Nhanh bool: chi nhan True/False
+            # that, gia tri khac -> 400. PHAI kiem isinstance(raw,
+            # bool) o nhanh nay — isinstance(True, int) la True nen
+            # neu de lọt vao nhanh so thi True bi nhan nhu so 1.
+            if not isinstance(raw, bool):
+                return None, "giá trị không hợp lệ"
             clean[key] = raw
     return clean, None
 

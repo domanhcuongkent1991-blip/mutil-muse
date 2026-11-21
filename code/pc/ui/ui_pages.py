@@ -1409,7 +1409,11 @@ def view_secret_password_page_html(account_id, display_name, csrf_token,
     §3.11 bước 2). Trang riêng, không phải hộp thoại nổi. Form
     urlencoded mang CSRF + confirm token 1 lần (5 phút)."""
     warnings = (
-        "<p>Mã sẽ hiện 1 lần duy nhất rồi tự ẩn sau 30 giây.</p>"
+        # HM (21/11, C-01): cau cu "hien 1 lan duy nhat" sai voi hanh
+        # vi moi — trang hien ma co nut "Hien lai ma" trong luc mo.
+        "<p>Mã sẽ tự ẩn sau 30 giây — bấm “Hiện lại mã” để xem lại "
+        "trong lúc trang còn mở; đóng trang hoặc tải lại thì không "
+        "xem lại được nữa, phải xoay mã mới.</p>"
         "<p>Xem xong phải xoay mã mới ngay — mã cũ sẽ chết.</p>"
         "<p>Lần xem này được ghi vào nhật ký (chỉ ghi thời điểm, "
         "không ghi mã).</p>")
@@ -1447,19 +1451,54 @@ def view_secret_password_page_html(account_id, display_name, csrf_token,
 
 
 def view_secret_page_html(account_id, display_name, fetch_secret,
-                          push_secret, viewed_at, transfer_active=False):
+                          push_secret, viewed_at, transfer_active=False,
+                          issue_show=False, intro_html=None,
+                          show_again=True):
     """Trang hiện mã (v0.6.0, T3j — response route 2 khi đúng mật
     khẩu, DESIGN §3.11 bước 4). HTML phía máy chủ, không JSON; mã
     hiện bằng text thường, không che; header no-store do handler
     gắn (không nằm trong HTML). Giá trị mã được esc khi render.
     JS đếm ngược + xóa mã khỏi trang nằm trong APP_JS chung (chỉ là
-    tiện ích — rào chắn thật là cờ "đã xem" phía máy chủ)."""
+    tiện ích — rào chắn thật là cờ "đã xem" phía máy chủ).
+
+    (HM 21/11 — hien ma khi cap, D-HM-01/D-HM-25) ``issue_show=True``:
+    trang kết quả sau cấp/xoay (tái dùng hàm này, không viết hàm
+    trang thứ 2): tiêu đề "Mã bí mật mới", KHÔNG link "Xoay mã mới
+    ngay", dòng chữ theo chế độ cấp. ``viewed_at`` ở chế độ này là
+    thời điểm cấp (``now`` lúc render), không phải "đã xem".
+    ``intro_html``: câu §3.7(c)/(d), render TRÊN khối mã.
+    ``show_again``: False thì không render nút "Hiện lại mã" (chỉ
+    dùng ở đường dự phòng §3.3b khi chủ nhân không duyệt câu F18(3)
+    mới — đường chính luôn True)."""
     extra = ""
     if transfer_active:
         extra = ("<p>Đang có luồng chuyển bot — kiểm tra đúng tài khoản "
                  "trước khi chép mã.</p>")
+    if issue_show:
+        heading = "Mã bí mật mới — %s" % (display_name or account_id)
+        viewed_line = (
+            "<p>Mã mới cấp lúc %s — chép mã rồi dán vào file cấu hình "
+            "của đúng tài khoản.</p>"
+            % esc(format_day_time_saigon(viewed_at)))
+        rotate_link = ""
+    else:
+        heading = "Mã bí mật — %s" % (display_name or account_id)
+        viewed_line = (
+            "<p>Đã xem mã lúc %s — mã này chỉ hiện trong trang này; "
+            "đóng trang hoặc tải lại thì không xem lại được nữa, phải "
+            "xoay mã mới.</p>"
+            % esc(format_day_time_saigon(viewed_at)))
+        rotate_link = (
+            '<a class="btn danger" href="/center/accounts/%s/'
+            'rotate-secret">Xoay mã mới ngay</a> '
+            % esc(account_id))
+    show_again_btn = (
+        '<button type="button" class="btn" '
+        'id="view-secret-show-again" hidden>Hiện lại mã</button> '
+        if show_again else "")
+    intro = intro_html or ""
     body = (
-        "<h1>Mã bí mật — %s</h1>"
+        "<h1>%s</h1>%s"
         "<p>Mã sẽ tự ẩn sau "
         '<span id="view-secret-countdown">30</span> giây.</p>'
         '<div id="view-secret-values">'
@@ -1477,21 +1516,21 @@ def view_secret_page_html(account_id, display_name, fetch_secret,
         "nhất.</p>"
         "<p>Chỉ dán mã vào file cấu hình của đúng tài khoản. Dán nhầm "
         "thì xoay mã mới ngay.</p>"
-        "<p>Mã chỉ hiện 1 lần — xoay mã mới ngay sau khi xem.</p>"
-        "<p>Đã xem mã lúc %s — mã này chỉ hiện 1 lần.</p>"
-        "%s"
+        "<p>Mã này chỉ hiện trong trang này — bấm “Hiện lại mã” để "
+        "xem lại trong lúc trang còn mở, mỗi lần hiện lại tự ẩn sau "
+        "30 giây; đóng trang hoặc tải lại thì không xem lại được "
+        "nữa, phải xoay mã mới.</p>"
+        "%s%s"
         '<div class="actions">'
         '<button type="button" class="btn" id="view-secret-hide-now">'
         "Đã chép xong, ẩn ngay</button> "
-        '<a class="btn danger" href="/center/accounts/%s/rotate-secret">'
-        "Xoay mã mới ngay</a> "
+        "%s%s"
         '<a class="btn" href="/?tab=center">Về tab Trung tâm</a>'
         "</div>"
-    ) % (esc(display_name or account_id), esc(fetch_secret),
-         esc(push_secret), esc(format_day_time_saigon(viewed_at)), extra,
-         esc(account_id))
-    return layout("Mã bí mật — %s" % (display_name or account_id),
-                  body)
+    ) % (esc(heading), intro, esc(fetch_secret),
+         esc(push_secret), viewed_line, extra, show_again_btn,
+         rotate_link)
+    return layout(heading, body)
 
 
 def center_fragment_html(tasks, accounts, health, filters,
@@ -1833,6 +1872,120 @@ def center_room_list_html(rooms, current_room, unread_counts,
     return ('<div class="center-room-list">%s</div>' % "".join(rows))
 
 
+def center_shared_links_html(links, state, csrf_token, room,
+                             notice=None, error=None, url_value="",
+                             title_value=""):
+    """Muc "Link chung" trong cot trai tab Chat (21/11 — D-LC-01/
+    D-LC-12/13/14/18/20, THIET-KE-LINK-CHUNG-21-11.md v0.2.1).
+
+    ``links``: list link (moi nhat len dau); ``state``:
+    "unset"|"open"|"closed" (trang thai thu gon nho phia may chu,
+    D-LC-20). Khi "closed": may chu KHONG render danh sach/form —
+    chi tieu de + so link + nut "Mở". Khi "unset": render du
+    (CSS an danh sach + form tren mobile <= 720px). ``notice``:
+    thong bao 1 lan sau xoa (flash session); ``error`` + ``url_value``
+    /``title_value``: loi form them + du lieu da nhap de giu lai
+    (co che (a), D-LC-06).
+
+    (DIEN GIAI — ghi BUILD-NOTES; SUA THEO AUDIT A-NS-01, 21/11)
+    Nut toggle khi "unset": may chu khong biet co man hinh nguoi
+    xem, nen nut hien "Mở" + aria-expanded="false" theo anh mau
+    mobile-dong (truong hop nut nay quan trong nhat la mobile, noi
+    muc dang dong; tren desktop muc dang mo san nen bam chi ghi
+    lai state=open, khong doi hien thi). Rieng aria-expanded thi
+    APP_JS sua lai thanh "true" khi desktop (>= 721px) + unset
+    (xem khoi matchMedia trong ui_static.py), cho dung trang thai
+    hien thi that voi trinh doc man hinh."""
+    from pc.ui.ui_store import (
+        SHARED_LINK_KIND_LABELS,
+        detect_shared_link_kind,
+        shared_link_domain,
+    )
+    if state not in ("open", "closed"):
+        state = "unset"
+    items = list(links or [])
+    if state == "open":
+        toggle_state, toggle_label, expanded = "closed", "Đóng", "true"
+    elif state == "closed":
+        toggle_state, toggle_label, expanded = "open", "Mở", "false"
+    else:
+        toggle_state, toggle_label, expanded = "open", "Mở", "false"
+    next_url = "/?tab=chat&room=%s#link-chung" % quote(room, safe="")
+    head = (
+        '<div class="shared-links-head">'
+        '<h3 id="link-chung">Link chung</h3>'
+        '<span class="shared-links-count">%d link</span>'
+        '<form class="shared-links-toggle-form" method="post" '
+        'action="/api/ui-prefs">'
+        '<input type="hidden" name="csrf_token" value="%s">'
+        '<input type="hidden" name="action" '
+        'value="set-shared-links-state">'
+        '<input type="hidden" name="state" value="%s">'
+        '<input type="hidden" name="next" value="%s">'
+        '<button type="submit" class="shared-links-toggle" '
+        'aria-expanded="%s">%s</button>'
+        "</form></div>"
+        % (len(items), esc(csrf_token), toggle_state, esc(next_url),
+           expanded, toggle_label))
+    notice_html = ""
+    if notice:
+        notice_html = '<p class="notice">%s</p>' % esc(notice)
+    if state == "closed":
+        return ('<div class="shared-links" data-state="closed">%s%s'
+                "</div>" % (head, notice_html))
+    rows = []
+    for item in items:
+        url = item["url"]
+        title = item["title"]
+        kind = detect_shared_link_kind(url)
+        kind_label = SHARED_LINK_KIND_LABELS.get(kind, "Link")
+        rows.append(
+            '<li class="shared-link-row">'
+            '<span class="shared-link-kind">%s</span>'
+            '<span class="shared-link-main">'
+            '<a href="%s" target="_blank" rel="noopener">%s</a>'
+            '<span class="shared-link-domain">%s</span>'
+            "</span>"
+            '<form class="shared-link-delete" method="post" '
+            'action="/api/shared-links/delete">'
+            '<input type="hidden" name="csrf_token" value="%s">'
+            '<input type="hidden" name="link_id" value="%s">'
+            '<input type="hidden" name="room" value="%s">'
+            '<button type="submit" class="shared-link-delete-btn" '
+            'aria-label="Xóa link %s">×</button>'
+            "</form></li>"
+            % (esc(kind_label), esc(url), esc(title),
+               esc(shared_link_domain(url)), esc(csrf_token),
+               esc(item["id"]), esc(room), esc(title)))
+    error_html = ""
+    url_attrs = ""
+    if error:
+        error_html = ('<p class="field-error" id="shared-link-error">'
+                      "%s</p>" % esc(error))
+        url_attrs = (' aria-invalid="true" '
+                     'aria-describedby="shared-link-error"')
+    add_form = (
+        '<form class="shared-links-add" method="post" '
+        'action="/api/shared-links/add">'
+        '<input type="hidden" name="csrf_token" value="%s">'
+        '<input type="hidden" name="room" value="%s">'
+        '<label for="shared-link-url">Link</label>'
+        '<input id="shared-link-url" name="url" value="%s"%s '
+        'placeholder="https://docs.google.com/document/d/…/edit">'
+        "%s"
+        '<label for="shared-link-title">Tiêu đề (không bắt buộc)'
+        "</label>"
+        '<input id="shared-link-title" name="title" value="%s" '
+        'placeholder="vd: Kế hoạch xuất clinker Q4">'
+        '<div class="actions"><button type="submit">Thêm</button></div>'
+        "</form>"
+        % (esc(csrf_token), esc(room), esc(url_value), url_attrs,
+           error_html, esc(title_value)))
+    return ('<div class="shared-links" data-state="%s">%s%s'
+            '<ul class="shared-links-list">%s</ul>%s</div>'
+            % (state, head, notice_html, "".join(rows), add_form))
+
+
 def center_chat_fragment_html(messages, account_names, task_titles,
                               chat_limit, has_more, room="chung",
                               oldest_seq=None, newest_seq=None,
@@ -1869,7 +2022,10 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
                          csrf_token, draft, archived, client_key,
                          storage_warn="", recipients=None,
                          filter_senders=None, account_colors=None,
-                         stopped_rounds=None):
+                         stopped_rounds=None, shared_links=None,
+                         shared_links_state="unset",
+                         shared_link_notice=None, shared_link_error=None,
+                         shared_link_url="", shared_link_title=""):
     """Tab Chat rieng, mo hinh A (v0.6.0, T3i — DOI Q-T3-05): cot
     trai danh sach phong (300px) + cot phai khung chat; khoang cach
     2 cot 16px; dien thoai <= 720px xep doc (CSS). Hop chat tab Chat
@@ -1931,12 +2087,17 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
     form = center_chat_form_html(
         csrf_token, room=current_room, draft=draft, archived=archived,
         client_key=client_key, recipients=recipients)
+    shared_links_html = center_shared_links_html(
+        shared_links or [], shared_links_state, csrf_token,
+        current_room, notice=shared_link_notice,
+        error=shared_link_error, url_value=shared_link_url,
+        title_value=shared_link_title)
     return (
         '<section class="center-chat-section">'
         '<h2 id="center-chat">Chat</h2>'
         "%s"
         '<div class="center-chat-layout">'
-        '<div class="center-chat-rooms">%s</div>'
+        '<div class="center-chat-rooms">%s%s</div>'
         '<div class="center-chat-main">'
         '<div class="center-chat-room-head"><strong>%s</strong>%s</div>'
         "%s"
@@ -1964,7 +2125,8 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
         "</div>"
         "</div>"
         "</section>"
-    ) % (storage_warn, room_list, esc(room_label), typing_line,
+    ) % (storage_warn, room_list, shared_links_html, esc(room_label),
+         typing_line,
          filter_html + stopped_html,
          esc(current_room),
          "" if oldest_seq is None else oldest_seq,
@@ -2337,8 +2499,9 @@ def ui_settings_page_html(prefs, csrf_token, center_config=None,
                           prune_state=None, file_used_bytes=None,
                           alert_settings=None, theme="light"):
     """Trang Cài đặt chung (TT15, v0.5.0): KHÔNG phải tab — mở bằng
-    link từ trang chính. 6 nhóm theo đúng thứ tự: Dọn dẹp, File, Việc
-    quá hạn, Cảnh báo, Giao diện, Đồng bộ.
+    link từ trang chính. 7 nhóm theo đúng thứ tự: Dọn dẹp, File, Việc
+    quá hạn, Cảnh báo, Giao diện, Đồng bộ, Link chung (nhóm 7,
+    21/11 — D-LC-16).
 
     ``center_config``: dict load_center_config (None -> mặc định);
     ``prune_state``: dict read_prune_state (None -> chưa dọn lần
@@ -2539,7 +2702,32 @@ def ui_settings_page_html(prefs, csrf_token, center_config=None,
         "</form>"
     ) % (theme_form, rows, esc(csrf_token))
 
-    # ĐX-05 (T3m): muc luc neo nhanh dau trang — 6 link thuong,
+    # -- Nhóm 7: Link chung (21/11 — D-LC-16) ------------------------
+    # 2 radio "1"/"0" theo tien le discussion (ui_app.py:2699-2703):
+    # KHONG dung checkbox tran gui "on" (se bi 400 "giá trị không
+    # hợp lệ" o nhanh bool). Dong giai thich viet dung su that
+    # §5.1 thiet ke.
+    open_flag = bool(config.get("shared_links_open_to_all", False))
+    link_chung_group = (
+        '<h2 id="nhom-link-chung">7. Link chung</h2>'
+        '<form method="post" action="/api/settings/center">'
+        '<input type="hidden" name="csrf_token" value="%s">'
+        '<fieldset><legend>Mở Link chung cho mọi tài khoản</legend>'
+        '<label><input type="radio" name="shared_links_open_to_all" '
+        'value="1"%s> Mở cho mọi tài khoản</label>'
+        '<label><input type="radio" name="shared_links_open_to_all" '
+        'value="0"%s> Chỉ chủ nhân</label>'
+        "</fieldset>"
+        "<p>Mọi người vào được giao diện này đều thấy nút thêm/xóa. "
+        "Đây chỉ là công tắc hiển thị, không phải cổng bảo mật — "
+        "giao diện chỉ có 1 mật khẩu chung.</p>"
+        '<div class="actions"><button type="submit">Lưu</button></div>'
+        "</form>"
+    ) % (esc(csrf_token),
+         " checked" if open_flag else "",
+         "" if open_flag else " checked")
+
+    # ĐX-05 (T3m): muc luc neo nhanh dau trang — 7 link thuong,
     # dung thu tu nhom; 360px cho xuong dong (flex-wrap cua CSS
     # chung), khong tran ngang.
     toc = (
@@ -2549,14 +2737,15 @@ def ui_settings_page_html(prefs, csrf_token, center_config=None,
         '<a href="#nhom-qua-han">3. Việc quá hạn</a> · '
         '<a href="#nhom-canh-bao">4. Cảnh báo</a> · '
         '<a href="#nhom-giao-dien">5. Giao diện</a> · '
-        '<a href="#nhom-dong-bo">6. Đồng bộ</a></p>'
+        '<a href="#nhom-dong-bo">6. Đồng bộ</a> · '
+        '<a href="#nhom-link-chung">7. Link chung</a></p>'
     )
     body = (
         "<h1>Cài đặt chung</h1>"
         '<p><a href="/">← Về màn hình chính</a></p>'
-        "%s%s%s%s%s%s%s"
+        "%s%s%s%s%s%s%s%s"
     ) % (toc, prune_group, file_group, overdue_group, alerts_group,
-         interface_group, sync_group)
+         interface_group, sync_group, link_chung_group)
     return layout("Cài đặt chung", body, csrf_token=csrf_token,
                   theme=theme)
 

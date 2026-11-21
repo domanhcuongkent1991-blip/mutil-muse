@@ -779,7 +779,8 @@ class UiApp:
         if error is not None:
             return error
         if path == "/" and request.method == "GET":
-            return self._handle_dashboard(request, session)
+            return self._handle_dashboard(request, session,
+                                          session_token=session_token)
         if path == "/fragments/dashboard" and request.method == "GET":
             return self._handle_dashboard_fragment(request, session)
         if path == "/fragments/history" and request.method == "GET":
@@ -798,6 +799,12 @@ class UiApp:
             return self._handle_settings_center(request, session)
         if path == "/api/settings/alerts":
             return self._handle_settings_alerts(request, session)
+        if path == "/api/shared-links/add":
+            return self._handle_shared_link_add(
+                request, session, session_token)
+        if path == "/api/shared-links/delete":
+            return self._handle_shared_link_delete(
+                request, session, session_token)
         if path == "/api/prune-now":
             return self._handle_prune_now(request, session)
         if path == "/center/tasks":
@@ -1356,8 +1363,17 @@ class UiApp:
         return name, day
 
     def _handle_dashboard(self, request, session, center_error=None,
-                          center_values=None):
+                          center_values=None, status=200,
+                          tab_override=None, room_override=None,
+                          session_token=None, shared_link_error=None,
+                          shared_link_url="", shared_link_title=""):
         params = self._dashboard_params(request)
+        # (Link chung, D-LC-06) Loi form them link: render lai tab
+        # Chat o dung phong dang mo, giu status 400 (co che (a)).
+        if tab_override is not None:
+            params["tab"] = tab_override
+        if room_override is not None:
+            params["room"] = room_override
         # (L6, 21/11 — quyet chu nhan) Luot tai trang day du ma tab
         # sai ten: redirect 302 ve tab Tất cả kem notice 1 lan.
         # Khong redirect khi dang hien loi form tao viec
@@ -1390,9 +1406,13 @@ class UiApp:
                 center_values=center_values)
         elif params["tab"] == "chat":
             static_html = self._center_chat_static_html(
-                session, params, request)
+                session, params, request, session_token=session_token,
+                shared_link_error=shared_link_error,
+                shared_link_url=shared_link_url,
+                shared_link_title=shared_link_title,
+                room_override=room_override)
         return self._with_security(Response.html(
-            200,
+            status,
             ui_pages.dashboard_page_html(fragment, session["csrf_token"],
                                          fragment_url=fragment_url,
                                          static_html=static_html,
@@ -1836,16 +1856,31 @@ class UiApp:
             error=center_error, values=center_values)
         return create
 
-    def _center_chat_static_html(self, session, params, request):
+    def _center_chat_static_html(self, session, params, request,
+                                 session_token=None,
+                                 shared_link_error=None,
+                                 shared_link_url="",
+                                 shared_link_title="",
+                                 room_override=None):
         """Tab Chat rieng, mo hinh A (v0.6.0, T3i — DOI Q-T3-05):
         cot trai danh sach phong + cot phai khung chat + o nhap.
         Render TINH ngoai fragment 5 giay (T3-CH-06) — JS tu polling
         delta rieng cho hop chat (khong qua fragment dashboard).
 
+        (Link chung, D-LC-01/08 — 21/11) Cot trai them muc Link
+        chung duoi danh sach phong. ``shared_link_notice``: flash
+        session 1 lan sau xoa (mau retry_notice — doc + xoa o lan
+        render ngay sau, tai lai thi het); ``shared_link_error`` +
+        ``shared_link_url``/``shared_link_title``: loi form them +
+        du lieu da nhap (co che (a), D-LC-06).
+
         Phong mo: ``?room=`` thang khi co (va duoc luu lam phong
         dang chat do); khong co ``?room=`` thi mo phong da luu
         (``chat_ui_state.json``); phong da luu khong con ton tai thi
-        rot lang le ve ``"chung"`` (Q-V060-11), khong bao. Dong canh
+        rot lang le ve ``"chung"`` (Q-V060-11), khong bao.
+        ``room_override`` (SUA THEO AUDIT A-NS-02, 21/11): khi
+        render lai sau loi form them link, phong lay tu truong an
+        "room" trong form thay cho phong da luu. Dong canh
         bao kho file (DX-01, T3m) chuyen theo sang tab Chat."""
         store = self._center_store()
         rooms = store.list_rooms(
@@ -1863,7 +1898,14 @@ class UiApp:
                 if room not in room_names:
                     room = "chung"
         else:
-            room = center_store.get_last_chat_room(self.root)
+            # (SUA THEO AUDIT A-NS-02, 21/11 — D-LC-06/N-10) Duong
+            # render lai sau loi form them link khong co ?room=
+            # trong query: phong lay tu truong an "room" trong form
+            # (room_override, _handle_dashboard da ghi vao
+            # params["room"]); chi khi khong co room_override hop
+            # le moi dung phong da luu (du phong, Q-V060-11).
+            room = room_override if room_override in room_names else \
+                center_store.get_last_chat_room(self.root)
             if room not in room_names:
                 room = "chung"
         chat_limit = params.get("chat_limit", 50)
@@ -1923,7 +1965,28 @@ class UiApp:
             stopped_rounds=[
                 item for item in
                 ui_store.center_discussion_stopped_rounds(self.root)
-                if item["room"] == room])
+                if item["room"] == room],
+            shared_links=ui_store.load_shared_links(self.root),
+            shared_links_state=ui_store.load_shared_links_state(
+                self.root),
+            shared_link_notice=self._pop_shared_link_notice(
+                session, session_token),
+            shared_link_error=shared_link_error,
+            shared_link_url=shared_link_url,
+            shared_link_title=shared_link_title)
+
+    def _pop_shared_link_notice(self, session, session_token):
+        """Doc + xoa flash "da xoa link" 1 lan (mau retry_notice,
+        D-LC-08): chi hien o lan render tab Chat ngay sau cu xoa,
+        tai lai thi het. Khong co session_token (duong goi khong
+        qua handle()) thi doc ma khong xoa — duong chinh luon co
+        token."""
+        raw = session.pop("shared_link_notice", None)
+        if raw is None:
+            return None
+        if session_token is not None:
+            ui_auth.save_session(self.root, session_token, session)
+        return raw if isinstance(raw, str) else None
 
     def _handle_center_mark_read(self, request, session):
         """POST /center/mark-read (v0.6.0, T3i — luat da doc moi):
@@ -2570,16 +2633,64 @@ class UiApp:
         return ui_store.mark_center_view_rotated(self.root, account_id)
 
     def _audit_center_secret(self, request, account_id,
-                             rotated_after_view=False):
+                             rotated_after_view=False,
+                             shown_on_issue=False):
         """1 dòng audit cho mỗi lần cấp/xoay secret (TS3): account_id +
         thời điểm, KHÔNG giá trị secret. (T3j) Xoay sau 1 lần xem thì
-        ghi thêm "rotated_after_view": true vào after (SPEC TS3)."""
+        ghi thêm "rotated_after_view": true vào after (SPEC TS3).
+        (HM 21/11, D-HM-15) Handler hien ma trong response thi ghi
+        thêm "shown_on_issue": true (chi rotate/join execute; remove
+        execute khong hien -> khong truyen)."""
         after = {"account_id": account_id}
         if rotated_after_view:
             after["rotated_after_view"] = True
+        if shown_on_issue:
+            after["shown_on_issue"] = True
         self._audit(request.client_ip, "center_secret_rotate", None,
                     None, after, "ok",
                     account_id=account_id)
+
+    def _read_and_render_issued_secret(self, request, session, account_id,
+                                       intro_html,
+                                       rotated_after_view=False):
+        """HM (21/11, D-HM-23): doc cap ma vua xoay + fail-closed +
+        dat co shown_at_issue + ghi 1 dong audit + render trang hien
+        ma (issue_show=True). Dung chung cho rotate + join execute
+        (khong chep buoc 3–6 hai lan). Tra response da qua
+        _with_security (no-store san).
+
+        Thu tu bat buoc: doc du ca cap moi dat co + ghi audit co
+        shown_on_issue; doc loi (1 trong 2 la None) thi ghi dung 1
+        dong audit KHONG co shown_on_issue + trang loi, khong dat
+        co, khong hien nua cap."""
+        now = time.time()
+        fetch_secret = center_store.read_center_secret(
+            self.root, account_id, "fetch")
+        push_secret = center_store.read_center_secret(
+            self.root, account_id, "push")
+        if fetch_secret is None or push_secret is None:
+            self._audit_center_secret(
+                request, account_id,
+                rotated_after_view=rotated_after_view)
+            return self._center_account_error(
+                session, "Không đọc được mã mới — xoay mã mới.")
+        ui_store.mark_center_secret_shown_at_issue(
+            self.root, account_id, now)
+        self._audit_center_secret(
+            request, account_id,
+            rotated_after_view=rotated_after_view, shown_on_issue=True)
+        transfer_active = self._account_transfer_block(
+            account_id, now) is not None
+        account_map = ui_store.read_accounts(
+            self.root).get("accounts") or {}
+        display = (account_map.get(account_id) or {}).get(
+            "display_name") or account_id
+        html = ui_pages.view_secret_page_html(
+            account_id, display,
+            fetch_secret.decode("utf-8"), push_secret.decode("utf-8"),
+            now, transfer_active=transfer_active, issue_show=True,
+            intro_html=intro_html)
+        return self._with_security(Response.html(200, html))
 
     def _center_account_error(self, session, text):
         """Trang lỗi thao tác tài khoản trung tâm (kèm link quay lại)."""
@@ -2800,11 +2911,15 @@ class UiApp:
             "tâm?</p>"
             "<p><strong>Cấp mã bí mật mới rồi bật cờ tham gia</strong> "
             "(cấp mã trước, bật cờ sau). Mã cũ (nếu có) chết ngay.</p>"
-            "<p>Mã mới chỉ tạo trên máy tính, <strong>không hiện trên "
-            "giao diện</strong>. Nhờ agent PC giao mã mới cho tài khoản "
-            "qua kênh an toàn; tài khoản ghi lại center-config rồi kiểm "
-            "chứng fetch 200 ngay bằng mã mới. Tới khi tài khoản kéo thử "
-            "thành công, tab Trung tâm mới hiện “đang hoạt động”.</p>"
+            # HM (21/11, §3.7(b)): cau moi — ma hien ngay tren trang
+            # tiep theo, khong qua agent PC.
+            "<p>Mã mới sẽ <strong>hiện ngay trên trang tiếp theo</strong> "
+            "— chép mã rồi dán vào file cấu hình của đúng tài khoản, "
+            "sau đó tài khoản kiểm chứng fetch 200 ngay bằng mã mới. "
+            "Mã chỉ hiện trong trang này: đóng trang hoặc tải lại thì "
+            "không xem lại được nữa — phải xoay mã mới. Tới khi tài "
+            "khoản kéo thử thành công, tab Trung tâm mới hiện “đang "
+            "hoạt động”.</p>"
         ) % (ui_pages.esc(record.get("display_name") or account_id),
              ui_pages.esc(account_id))
         return self._with_security(Response.html(
@@ -2839,29 +2954,28 @@ class UiApp:
                     {"account_id": account_id, "participating": False},
                     {"account_id": account_id, "participating": True},
                     "ok", account_id=account_id)
-        self._audit_center_secret(request, account_id,
-                                  rotated_after_view)
-        body = (
-            "<h1>Đã cấp mã mới cho tài khoản %s</h1>"
-            "<p>Cờ tham gia đã bật. Mã mới chỉ nằm trên máy tính, "
-            "<strong>không hiện ở đây</strong>.</p>"
-            "<p>Bước tiếp theo (agent PC làm): giao mã mới cho tài khoản "
-            "qua kênh an toàn; tài khoản ghi lại center-config rồi kiểm "
-            "chứng fetch 200 ngay bằng mã mới. Tới khi tài khoản kéo thử "
-            "thành công, tab Trung tâm mới hiện “đang hoạt động”.</p>"
-            '<p><a href="/accounts">Về danh sách tài khoản</a> · '
-            '<a href="/?tab=center">Tab Trung tâm</a></p>'
-        ) % ui_pages.esc(account_id)
-        return self._with_security(Response.html(
-            200,
-            ui_pages.simple_page_html("Đã tham gia trung tâm", body,
-                                      csrf_token=session["csrf_token"])))
+        # HM (21/11, D-HM-04/D-HM-16): tham gia hien ma luon (cung
+        # helper chung voi rotate execute). Thu tu Q-AM-01 giu
+        # nguyen: xoay truoc, bat co sau, roi moi render ma — audit
+        # center_join ghi truoc center_secret_rotate nhu cu.
+        # (N-11) Doc ma loi sau khi da bat co: giu participating=True
+        # (khong rollback), co shown_at_issue chua dat; duong phuc
+        # hoi la route xem ma bang mat khau.
+        intro_html = (
+            "<p>Cờ tham gia đã bật.</p>"
+            "<p>Dán mã mới vào file cấu hình của đúng tài khoản rồi "
+            "kiểm chứng fetch 200 ngay bằng mã mới. Tới khi tài khoản "
+            "kéo thử thành công, tab Trung tâm mới hiện “đang hoạt "
+            "động”.</p>")
+        return self._read_and_render_issued_secret(
+            request, session, account_id, intro_html,
+            rotated_after_view=rotated_after_view)
 
     def _handle_center_rotate_secret(self, request, session, session_token,
                                      account_id, rest):
         """Cấp/cấp lại mã mới (Q-AM-07, TS4): GET trang xác nhận, POST
-        /execute xoay cặp secret. UI chỉ kích hoạt luồng xoay — không
-        hiện/tạo secret trong trình duyệt, không hiện giá trị mã.
+        /execute xoay cặp secret rồi hiện mã mới ngay trên trang kết
+        quả (HM 21/11 — hien ma khi cap, issue_show=True).
 
         (NS-02) Cau chu doi theo trang thai secret: chua co ma ->
         "Cấp mã mới" + cau hoi cap lan dau; da co ma -> "Cấp lại mã
@@ -2907,11 +3021,14 @@ class UiApp:
                     "<strong>%s</strong> (%s) phải ghi lại cấu hình mới "
                     "rồi mới kéo tin tiếp được. Cấp lại mã?</p>"
                     "%s"
-                    "<p>Mã mới chỉ tạo trên máy tính, "
-                    "<strong>không hiện trên giao diện</strong>. Nhờ "
-                    "agent PC giao mã mới cho tài khoản qua kênh an "
-                    "toàn; tài khoản ghi lại center-config rồi kiểm "
-                    "chứng fetch 200 ngay bằng mã mới.</p>"
+                    # HM (21/11, §3.7(a)): cau moi — ma hien ngay
+                    # tren trang tiep theo, khong qua agent PC.
+                    "<p>Mã mới sẽ <strong>hiện ngay trên trang tiếp "
+                    "theo</strong> — chép mã rồi dán vào file cấu hình "
+                    "của đúng tài khoản, sau đó tài khoản kiểm chứng "
+                    "fetch 200 ngay bằng mã mới. Mã chỉ hiện trong "
+                    "trang này: đóng trang hoặc tải lại thì không xem "
+                    "lại được nữa — phải xoay mã mới.</p>"
                     "<p>Ngày cấp trên tab Trung tâm đổi sang ngày cấp "
                     "mới sau khi xoay.</p>"
                 ) % (ui_pages.esc(record.get("display_name") or account_id),
@@ -2921,11 +3038,12 @@ class UiApp:
                     "<p>Tài khoản <strong>%s</strong> (%s) chưa có mã "
                     "bí mật trung tâm. Cấp mã mới cho tài khoản này?</p>"
                     "%s"
-                    "<p>Mã mới chỉ tạo trên máy tính, "
-                    "<strong>không hiện trên giao diện</strong>. Nhờ "
-                    "agent PC giao mã mới cho tài khoản qua kênh an "
-                    "toàn; tài khoản ghi lại center-config rồi kiểm "
-                    "chứng fetch 200 ngay bằng mã mới.</p>"
+                    "<p>Mã mới sẽ <strong>hiện ngay trên trang tiếp "
+                    "theo</strong> — chép mã rồi dán vào file cấu hình "
+                    "của đúng tài khoản, sau đó tài khoản kiểm chứng "
+                    "fetch 200 ngay bằng mã mới. Mã chỉ hiện trong "
+                    "trang này: đóng trang hoặc tải lại thì không xem "
+                    "lại được nữa — phải xoay mã mới.</p>"
                 ) % (ui_pages.esc(record.get("display_name") or account_id),
                      ui_pages.esc(account_id), warn)
             return self._with_security(Response.html(
@@ -2958,25 +3076,23 @@ class UiApp:
                     '<p><a href="/?tab=center">Tab Trung tâm</a></p>',
                     csrf_token=session["csrf_token"])))
         rotated_after_view = self._rotate_center_secrets(account_id)
-        self._audit_center_secret(request, account_id,
-                                  rotated_after_view)
-        old_dead = ("<p>Mã cũ đã chết, mã mới chỉ nằm trên máy tính, "
-                    "<strong>không hiện ở đây</strong>.</p>"
-                    if secret_has else
-                    "<p>Mã mới chỉ nằm trên máy tính, "
-                    "<strong>không hiện ở đây</strong>.</p>")
-        body = (
-            "<h1>Đã cấp mã mới cho tài khoản %s</h1>"
-            "%s"
-            "<p>Bước tiếp theo (agent PC làm): giao mã mới cho tài khoản "
-            "qua kênh an toàn; tài khoản ghi lại center-config rồi kiểm "
-            "chứng fetch 200 ngay bằng mã mới.</p>"
-            '<p><a href="/?tab=center">Về tab Trung tâm</a></p>'
-        ) % (ui_pages.esc(account_id), old_dead)
-        return self._with_security(Response.html(
-            200,
-            ui_pages.simple_page_html(title, body,
-                                      csrf_token=session["csrf_token"])))
+        # HM (21/11, D-HM-14/D-HM-23): xoay xong doc lai cap ma roi
+        # hien ngay (helper chung voi join execute) — audit
+        # center_secret_rotate chi ghi 1 lan trong helper, SAU khi
+        # doc du cap (N-01).
+        if secret_has:
+            intro_html = (
+                "<p>Mã cũ đã chết.</p>"
+                "<p>Dán mã mới vào file cấu hình của đúng tài khoản "
+                "rồi kiểm chứng fetch 200 ngay bằng mã mới.</p>")
+        else:
+            intro_html = (
+                "<p>Mã mới đã cấp.</p>"
+                "<p>Dán mã mới vào file cấu hình của đúng tài khoản "
+                "rồi kiểm chứng fetch 200 ngay bằng mã mới.</p>")
+        return self._read_and_render_issued_secret(
+            request, session, account_id, intro_html,
+            rotated_after_view=rotated_after_view)
 
     # -- xem mã bí mật trung tâm (v0.6.0, T3j — ngoại lệ F18(3)) --------
 
@@ -3139,8 +3255,15 @@ class UiApp:
             # "chưa từng xem" bằng audit — dấu khôi phục
             # (center_view_restored.json) + mã cũ hơn mốc khôi phục
             # thì từ chối xem cho tới khi xoay mã.
-            if state_status == "missing" and ui_store.audit_has_center_view(
-                    self.root, account_id):
+            if state_status == "missing" and (
+                    ui_store.audit_has_center_view(
+                        self.root, account_id)
+                    # HM (21/11, D-HM-21/C-02): ma chi hien luc cap
+                    # (chua tung xem) khong co dong center_secret_view
+                    # nen audit cu khong chan duoc — kiem them dong
+                    # rotate co shown_on_issue.
+                    or ui_store.audit_has_center_issue_show(
+                        self.root, account_id)):
                 self._audit(
                     request.client_ip, "center_secret_view_blocked",
                     None, {"has_secret": True},
@@ -3166,18 +3289,43 @@ class UiApp:
             # xem lại bị chặn, KHÔNG đọc mã. Kiểm tra + đặt cờ làm
             # trong cùng 1 khóa flock (modify_center_view_state) để
             # 2 tab bấm cùng lúc không hiện lại mã cũ lần 2.
+            # (HM 21/11, D-HM-19/D-HM-22) Hop dong tra ve cua
+            # _check_and_mark: None = cho xem (da dat viewed_at);
+            # ("viewed", epoch) = da xem luc epoch; "shown_at_issue"
+            # = da hien luc cap, chua tung xem. Thu tu: viewed_at
+            # truoc (dong ho 24 gio dang chay thang khi ca 2 co cung
+            # dat — chi xay ra khi can thiep tay/su co). Duong chan
+            # KHONG mutate entry.
             def _check_and_mark(view_state):
                 entry = (view_state.get("accounts") or {}).get(
                     account_id) or {}
                 viewed = entry.get("viewed_at")
                 if viewed is not None:
-                    return viewed
+                    return ("viewed", viewed)
+                if entry.get("shown_at_issue") is not None:
+                    return "shown_at_issue"
                 view_state.setdefault("accounts", {})[account_id] = {
-                    "viewed_at": now, "rotated_after_view": False}
+                    "viewed_at": now, "rotated_after_view": False,
+                    # Mang theo co cu (binh thuong la None vi co nay
+                    # chan truoc — phong thu, xem D-HM-26/N2-01).
+                    "shown_at_issue": entry.get("shown_at_issue")}
                 return None
 
-            already_viewed_at = ui_store.modify_center_view_state(
+            check_result = ui_store.modify_center_view_state(
                 self.root, _check_and_mark)
+            if check_result == "shown_at_issue":
+                self._audit(
+                    request.client_ip, "center_secret_view_blocked",
+                    None, {"has_secret": True},
+                    {"reason": "shown_at_issue",
+                     "has_secret": True}, "failed",
+                    account_id=account_id)
+                return self._view_secret_blocked_page(
+                    session, "Mã này đã hiện lúc cấp — xoay mã mới rồi "
+                             "xem mã mới.")
+            already_viewed_at = None
+            if check_result is not None:
+                already_viewed_at = check_result[1]
             if already_viewed_at is not None:
                 if now - already_viewed_at > (
                         ui_store.CENTER_VIEW_ROTATION_DEADLINE_SECONDS):
@@ -3200,8 +3348,9 @@ class UiApp:
                     session, "Mã này đã hiện 1 lần — xoay mã mới rồi "
                              "xem mã mới.")
             # Chưa xem: tài khoản chưa có mã -> 404 chung (frag-03
-            # §4.5); có mã thì đọc cặp mã (đường đọc duy nhất trong
-            # UI — ngoại lệ F18(3)), ghi audit, trả trang hiện mã.
+            # §4.5); có mã thì đọc cặp mã (1 trong 2 ham duoc phep
+            # doc — handler nay + helper hien ma luc cap, ngoai le
+            # F18(3)), ghi audit, trả trang hiện mã.
             # Cờ "đã xem" đã đặt ở bước trên; nếu mã biến mất giữa
             # chừng (đọc được None) thì trả 404 — cờ vẫn giữ
             # (fail-closed: phải xoay mã mới).
@@ -3301,6 +3450,9 @@ class UiApp:
                                      lambda v: "%d%%" % round(v * 100)),
         "overdue_severe_hours": ("Quá hạn bao lâu thì tính là nặng",
                                  lambda v: "%d giờ" % v),
+        "shared_links_open_to_all": ("Mở Link chung cho mọi tài khoản",
+                                     lambda v: ("Mở" if v
+                                                else "Chỉ chủ nhân")),
     }
 
     def _handle_settings_center(self, request, session):
@@ -3315,7 +3467,8 @@ class UiApp:
             return self._csrf_error(session)
         raw = {}
         for key in ("prune_day", "prune_retention_days",
-                    "prune_near_full_pct", "overdue_severe_hours"):
+                    "prune_near_full_pct", "overdue_severe_hours",
+                    "shared_links_open_to_all"):
             value = request.form_value(key, None)
             if value is not None and value != "":
                 raw[key] = value
@@ -3325,7 +3478,8 @@ class UiApp:
             if key in ("csrf_token",):
                 continue
             if key not in ("prune_day", "prune_retention_days",
-                           "prune_near_full_pct", "overdue_severe_hours"):
+                           "prune_near_full_pct", "overdue_severe_hours",
+                           "shared_links_open_to_all"):
                 return self._with_security(Response.text(
                     400, "khóa không hợp lệ: %s" % key))
         updates = {}
@@ -3342,6 +3496,16 @@ class UiApp:
             if "overdue_severe_hours" in raw:
                 updates["overdue_severe_hours"] = _parse_int_pct(
                     raw["overdue_severe_hours"], "overdue_severe_hours")
+            if "shared_links_open_to_all" in raw:
+                # (Link chung, D-LC-16/N-01) Ma hoa form->bool theo
+                # tien le discussion ("1"/"0"): checkbox tran gui
+                # "on" se bi 400 "giá trị không hợp lệ" o nhanh
+                # bool cua validate (khong dung checkbox tran).
+                if raw["shared_links_open_to_all"] not in ("0", "1"):
+                    return self._with_security(Response.text(
+                        400, "giá trị không hợp lệ"))
+                updates["shared_links_open_to_all"] = \
+                    raw["shared_links_open_to_all"] == "1"
         except ValueError as exc:
             return self._with_security(Response.text(400, str(exc)))
         clean, error = center_store.validate_center_config_updates(updates)
@@ -3349,10 +3513,11 @@ class UiApp:
             return self._with_security(Response.text(400, error))
         # ĐX-07 (T3m): luu xong ve neo nhom chua khoa vua doi —
         # khoa prune_* -> #nhom-don-dep (nhom 1, dung truoc nhat),
-        # chi overdue_severe_hours -> #nhom-qua-han; khong khoa nao
-        # doi (gui lai dung gia tri cu) -> #nhom-don-dep vi form
-        # trung tam nam trong nhom Don dep. Loi 400/403 khong doi
-        # redirect (tra trang loi nhu cu).
+        # chi overdue_severe_hours -> #nhom-qua-han; chi
+        # shared_links_open_to_all -> #nhom-link-chung (nhom 7,
+        # D-LC-16); khong khoa nao doi (gui lai dung gia tri cu) ->
+        # #nhom-don-dep vi form trung tam nam trong nhom Don dep.
+        # Loi 400/403 khong doi redirect (tra trang loi nhu cu).
         if not clean:
             return self._with_security(Response.redirect(
                 "/settings#nhom-don-dep"))
@@ -3367,8 +3532,12 @@ class UiApp:
                         "center_settings_%s" % key, "center",
                         "%s: %s" % (label, fmt(old)),
                         "%s: %s" % (label, fmt(value)), "ok")
-        anchor = "#nhom-qua-han" if set(clean) == {
-            "overdue_severe_hours"} else "#nhom-don-dep"
+        if set(clean) == {"overdue_severe_hours"}:
+            anchor = "#nhom-qua-han"
+        elif set(clean) == {"shared_links_open_to_all"}:
+            anchor = "#nhom-link-chung"
+        else:
+            anchor = "#nhom-don-dep"
         return self._with_security(Response.redirect(
             "/settings%s" % anchor))
 
@@ -3432,6 +3601,95 @@ class UiApp:
         return self._with_security(Response.redirect(
             "/settings#nhom-canh-bao"))
 
+    # -- Link chung trong tab Chat (21/11 — D-LC-06/08/09/15/16) -----
+    def _shared_link_room(self, request):
+        """Phong hien tai cho redirect sau them/xoa (D-LC-06d/
+        D-LC-08, N-10): truong an ``room`` trong form; thieu/la ->
+        phong da luu (get_last_chat_room)."""
+        raw = request.form_value("room").strip()
+        if not raw:
+            return center_store.get_last_chat_room(self.root)
+        try:
+            return center_store.parse_room(raw)
+        except center_store.CenterError:
+            return center_store.get_last_chat_room(self.root)
+
+    def _shared_link_flag_checked(self):
+        """Doc co shared_links_open_to_all (D-LC-15/D-LC-17 — CHO
+        CAM SAN, chua phai cong quyen that: session UI khong mang
+        account_id nen khong phan biet duoc ai voi ai; moi phien UI
+        deu la chu nhan. Route them/xoa lam viec NHU CU bat ke co
+        true/false; render form/nut xoa cung vay. Ghi ro de doi sau
+        khoi tuong co da co tac dung."""
+        return bool(center_store.load_center_config(
+            self.root).get("shared_links_open_to_all", False))
+
+    def _handle_shared_link_add(self, request, session, session_token):
+        """POST /api/shared-links/add (D-LC-06d — CHOT ve hinh thuc,
+        chua chot ve kiem quyen, cho dap an Q1): CSRF bat buoc +
+        kiem Origin/Sec-Fetch-Site nhu moi POST doi trang thai;
+        khong co GET nao doi trang thai. May chu kiem lai toan bo
+        §3.3 + co quyen §5 (cho cam san — xem
+        _shared_link_flag_checked). Loi form -> HTTP 400 + render
+        lai tab Chat kem loi canh truong URL + giu du lieu da nhap
+        (co che (a), D-LC-06 — KHONG tra Response.text(400) tron).
+        Them xong -> redirect ve /?tab=chat&room=<phong>#link-chung
+        (giu ?room=, N-10). Audit 1 dong shared_link_add
+        (bot_id "center", khong ghi full URL — D-LC-09)."""
+        if request.method != "POST":
+            return self._method_not_allowed(session)
+        if not self._csrf_ok(request, session):
+            return self._csrf_error(session)
+        _flag = self._shared_link_flag_checked()
+        room = self._shared_link_room(request)
+        url = request.form_value("url")
+        title = request.form_value("title")
+        link, error = ui_store.add_shared_link(self.root, url, title)
+        if error is not None:
+            return self._handle_dashboard(
+                request, session, status=400, tab_override="chat",
+                room_override=room, session_token=session_token,
+                shared_link_error=error, shared_link_url=url,
+                shared_link_title=title)
+        self._audit(request.client_ip, "shared_link_add", "center", "",
+                    "%s [%s] %s" % (link["title"], link["kind"],
+                                    ui_store.shared_link_domain(
+                                        link["url"])),
+                    "ok")
+        return self._with_security(Response.redirect(
+            "/?tab=chat&room=%s#link-chung" % quote(room)))
+
+    def _handle_shared_link_delete(self, request, session, session_token):
+        """POST /api/shared-links/delete (D-LC-08b — CHOT ve hinh
+        thuc): CSRF bat buoc; body chi mang link_id; sai mau/khong
+        ton tai -> 400 "Link không còn trong danh sách." (khong
+        404). Xoa xong -> redirect ve
+        /?tab=chat&room=<phong>#link-chung (giu ?room=) kem thong
+        bao 1 lan qua flash session shared_link_notice (mau
+        retry_notice — dat truoc redirect, doc + xoa o lan render
+        sau, khong them query param). Khong co hop xac nhan rieng.
+        Audit 1 dong shared_link_delete (D-LC-09)."""
+        if request.method != "POST":
+            return self._method_not_allowed(session)
+        if not self._csrf_ok(request, session):
+            return self._csrf_error(session)
+        _flag = self._shared_link_flag_checked()
+        room = self._shared_link_room(request)
+        link, error = ui_store.delete_shared_link(
+            self.root, request.form_value("link_id"))
+        if error is not None:
+            return self._with_security(Response.text(400, error))
+        self._audit(request.client_ip, "shared_link_delete", "center",
+                    "%s [%s] %s" % (link["title"], link["kind"],
+                                    ui_store.shared_link_domain(
+                                        link["url"])),
+                    "", "ok")
+        session["shared_link_notice"] = (
+            'Đã xóa link "%s".' % link["title"])
+        ui_auth.save_session(self.root, session_token, session)
+        return self._with_security(Response.redirect(
+            "/?tab=chat&room=%s#link-chung" % quote(room)))
+
     def _handle_prune_now(self, request, session):
         """POST /api/prune-now: nút "Dọn ngay" (Q3). CSRF bắt buộc.
         Chạy 1 lần dọn trong tiến trình UI (giữ store.lock — UI không
@@ -3494,6 +3752,7 @@ class UiApp:
                     "action": request.form_value("action"),
                     "tab": request.form_value("tab"),
                     "theme": request.form_value("theme"),
+                    "state": request.form_value("state"),
                     "next": request.form_value("next")}
         action = data.get("action") or ""
         next_url = data.get("next") or ""
@@ -3540,6 +3799,20 @@ class UiApp:
                 self.root,
                 lambda prefs: [prefs.__setitem__(key, closed)
                                for key in keys])
+            return self._ui_prefs_response(is_json, next_url, collapsed)
+        if action == "set-shared-links-state":
+            # (Link chung, D-LC-20) Nho trang thai thu gon/mở muc
+            # Link chung phia may chu (khoa rieng
+            # "shared-links-state" o cap cao nhat ui_prefs.json,
+            # khong qua dict collapsed). state la -> 400, khong
+            # ghi gi. KHONG ghi audit (luat node toggle — chi audit
+            # khi "Về mặc định").
+            state = data.get("state") or ""
+            if state not in ui_store.SHARED_LINKS_STATE_VALUES:
+                return self._with_security(Response.text(
+                    400, "trạng thái không hợp lệ"))
+            ui_store.set_shared_links_state(self.root, state)
+            collapsed = ui_store.load_ui_prefs(self.root)
             return self._ui_prefs_response(is_json, next_url, collapsed)
         node = data.get("node") or ""
         if node not in ui_store.UI_PREF_KEYS:

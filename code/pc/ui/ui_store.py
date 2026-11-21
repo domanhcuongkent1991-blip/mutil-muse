@@ -35,6 +35,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Số liệu theo thiết kế / SUY LUẬN (ghi rõ nguồn từng số).
 PREVIEW_LIMIT = 40  # ký tự Unicode, cắt ở ranh giới ký tự (05 §1).
@@ -741,9 +742,16 @@ def reset_ui_prefs(root):
     §3.2): theme đang "dark" (hoặc file có khóa lạ) thì ghi lại file
     mặc định + giữ theme/khóa lạ; không có gì cần giữ thì xóa file
     như cũ.
+
+    (Link chung, D-LC-20/G-V2-01) NGOẠI LỆ tường minh so với luật
+    "giữ khóa lạ": khóa "shared-links-state" BỊ XÓA khi reset (về
+    "unset" — mobile đóng / desktop mở). Phải pop tường minh khỏi
+    ``extra`` trước khi ghi lại, vì reset_ui_prefs vốn giữ nguyên
+    ``extra`` nên không pop thì khóa trạng thái sống sót qua reset.
     """
     with _ui_prefs_lock(root):
         _collapsed, theme, extra = _load_ui_prefs_raw(root)
+        extra.pop("shared-links-state", None)
         defaults = _normalize_ui_prefs(None)
         if theme == UI_THEME_DEFAULT and not extra:
             try:
@@ -840,6 +848,298 @@ def save_alert_settings(root, updates):
             data[key] = value
         write_json_file(path, data, mode=0o600)
     return load_alert_settings(root)
+
+
+# -- Link chung trong tab Chat (21/11 — THIET-KE-LINK-CHUNG-21-11.md
+# v0.2.1, D-LC-03…06, D-LC-10, D-LC-20) --------------------------------
+# File store rieng ui-config/shared_links.json, theo dung mau
+# alert_settings.json (flock rieng, tmp+rename qua write_json_file,
+# quyen 600, thieu/hong -> rong). Duoc backup hang ngay theo (UI
+# config tru session), khong bi prune cat.
+SHARED_LINKS_MAX = 50
+SHARED_LINK_URL_MAX_LEN = 2000
+SHARED_LINK_TITLE_MAX_LEN = 200
+SHARED_LINK_ID_RE = re.compile(r"^l-[0-9a-f]{12}$")
+SHARED_LINK_KIND_LABELS = {
+    "drive": "Drive", "docs": "Docs", "sheets": "Sheets",
+    "slides": "Slides", "other": "Link",
+}
+SHARED_LINK_KIND_TITLES = {
+    "drive": "Google Drive", "docs": "Google Docs",
+    "sheets": "Google Sheets", "slides": "Google Slides",
+}
+_FILE_ID_PART = r"[A-Za-z0-9_-]+"
+_DRIVE_FILE_RE = re.compile(
+    r"^/file(/u/\d+)?/d/%s(/.*)?$" % _FILE_ID_PART)
+_DRIVE_FOLDER_RE = re.compile(
+    r"^/drive(/u/\d+)?/folders/%s" % _FILE_ID_PART)
+_DRIVE_OPEN_RE = re.compile(r"^(/u/\d+)?/open$")
+_DOCS_RE = re.compile(
+    r"^/document(/u/\d+)?/d/%s" % _FILE_ID_PART)
+_SHEETS_RE = re.compile(
+    r"^/spreadsheets(/u/\d+)?/d/%s" % _FILE_ID_PART)
+_SLIDES_RE = re.compile(
+    r"^/presentation(/u/\d+)?/d/%s" % _FILE_ID_PART)
+
+
+def detect_shared_link_kind(url):
+    """Suy kind tu URL theo bang D-LC-10 (ten mien/duong dan, khong
+    goi API Google). Khop khong phan biet hoa/thuong o scheme/host
+    (ha host ve chu thuong truoc khi nhan dien); duong dan/FILE_ID
+    van phan biet hoa/thuong. Khong khop -> "other" (van luu)."""
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return "other"
+    host = (parts.hostname or "").lower()
+    path = parts.path or ""
+    if host == "drive.google.com":
+        if _DRIVE_FILE_RE.match(path) or _DRIVE_FOLDER_RE.match(path) \
+                or _DRIVE_OPEN_RE.match(path) \
+                or path == "/embeddedfolderview" \
+                or path == "/drive" or path.startswith("/drive/"):
+            return "drive"
+        return "other"
+    if host == "docs.google.com":
+        if _DOCS_RE.match(path):
+            return "docs"
+        if _SHEETS_RE.match(path):
+            return "sheets"
+        if _SLIDES_RE.match(path):
+            return "slides"
+        return "other"
+    return "other"
+
+
+def shared_link_domain(url):
+    """Ten mien cua URL (ha chu thuong); khong tach duoc -> ""."""
+    try:
+        host = urlsplit((url or "").strip()).hostname
+    except ValueError:
+        return ""
+    return (host or "").lower()
+
+
+def normalize_shared_link_url(url):
+    """Dang chuan cua URL, CHI dung de so trung (D-LC-06b, 7 buoc
+    co thu tu): cat khoang trang -> tach scheme/host/duong dan/
+    query/fragment -> ha scheme/host -> bo cong mac dinh (:80/:443)
+    + bo tien to "www." -> bo "/" cuoi PHAN DUONG DAN (sau khi da
+    tach query/fragment) -> giu nguyen query/fragment (ca thu tu
+    tham so lan chu hoa/thuong) -> so trung. URL luu xuong file
+    van la URL goc da cat khoang trang, khong bi ghi de bang dang
+    chuan nay."""
+    text = (url or "").strip()
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return text
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    if port is not None and not (
+            (scheme == "http" and port == 80)
+            or (scheme == "https" and port == 443)):
+        host = "%s:%d" % (host, port)
+    # Bang §3.3 cap 2: http vs https la TRUNG (cung 1 tai lieu) —
+    # thong nhat scheme ve "https" trong dang chuan (chi de so
+    # trung; URL luu xuong file giu nguyen scheme goc).
+    if scheme in ("http", "https"):
+        scheme = "https"
+    path = (parts.path or "").rstrip("/")
+    out = "%s://%s%s" % (scheme, host, path)
+    if parts.query:
+        out += "?" + parts.query
+    if parts.fragment:
+        out += "#" + parts.fragment
+    return out
+
+
+def _shared_links_path(root):
+    return Path(root) / "ui-config" / "shared_links.json"
+
+
+@contextlib.contextmanager
+def _shared_links_lock(root):
+    """Khoa flock rieng cho shared_links.json (khong dung chung
+    lock voi ui_prefs/alert_settings/center.json)."""
+    lock_path = Path(root) / "ui-config" / "shared_links.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _clean_shared_links(data):
+    """Loc danh sach link ve dang hop le (moi nhat len dau nhu
+    da luu); muc hong/sai schema -> bo, khong crash."""
+    if not isinstance(data, dict):
+        return []
+    links = data.get("links")
+    if not isinstance(links, list):
+        return []
+    out = []
+    for item in links:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        # (SUA THEO AUDIT B-N01, 21/11) Chi giu URL http(s): file
+        # ghi tay co the chua scheme la (vd "javascript:...") ma
+        # duong ghi qua UI da chan; loc o day (1 cho, moi duong
+        # doc deu qua _clean_shared_links) thi render khong bao
+        # gio in href voi scheme la ra HTML.
+        url = url.strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        link_id = item.get("id")
+        if not isinstance(link_id, str) \
+                or not SHARED_LINK_ID_RE.match(link_id):
+            continue
+        title = item.get("title")
+        if not isinstance(title, str):
+            title = ""
+        kind = item.get("kind")
+        if kind not in SHARED_LINK_KIND_LABELS:
+            kind = detect_shared_link_kind(url)
+        added_at = item.get("added_at")
+        if not isinstance(added_at, (int, float)) \
+                or isinstance(added_at, bool):
+            added_at = 0
+        out.append({"id": link_id, "url": url, "title": title,
+                    "kind": kind,
+                    "added_by": item.get("added_by") or "owner",
+                    "added_at": int(added_at)})
+    return out
+
+
+def load_shared_links(root):
+    """Doc ui-config/shared_links.json -> list link (moi nhat len
+    dau). File thieu/hong -> [], khong crash."""
+    return _clean_shared_links(read_json_file(_shared_links_path(root)))
+
+
+def save_shared_links(root, links):
+    """Ghi toan bo danh sach link (da kiem tra) xuong file: flock
+    + tmp+rename, quyen 600. Giu version = 1 (luat GC-02)."""
+    with _shared_links_lock(root):
+        write_json_file(_shared_links_path(root),
+                        {"version": 1, "links": list(links)},
+                        mode=0o600)
+    return load_shared_links(root)
+
+
+def add_shared_link(root, url, title=""):
+    """Them 1 link (D-LC-04…06): kiem tra URL (bat buoc http(s),
+    khong khoang trang ben trong, <= 2000 ky tu), chong trung theo
+    dang chuan (D-LC-06b), gioi han 50 link, tieu de trong -> tu
+    sinh, dai > 200 -> cat con 200 (khong 400). Tra (link, None)
+    khi xong, (None, loi_tieng_Viet) khi bi tu choi — khong ghi gi
+    khi loi. URL luu la URL goc da cat khoang trang."""
+    raw_url = url if isinstance(url, str) else ""
+    cleaned = raw_url.strip()
+    if not cleaned.lower().startswith(("http://", "https://")):
+        return None, "Dán link bắt đầu bằng http:// hoặc https://"
+    if any(ch.isspace() for ch in cleaned):
+        return None, "Link không được chứa khoảng trắng."
+    if len(cleaned) > SHARED_LINK_URL_MAX_LEN:
+        return None, "Link dài quá 2.000 ký tự."
+    raw_title = title if isinstance(title, str) else ""
+    title = raw_title.strip()
+    with _shared_links_lock(root):
+        links = _clean_shared_links(
+            read_json_file(_shared_links_path(root)))
+        if len(links) >= SHARED_LINKS_MAX:
+            return None, ("Đã đủ 50 link — xóa bớt 1 link rồi thêm "
+                          "lại.")
+        normalized = normalize_shared_link_url(cleaned)
+        for item in links:
+            if normalize_shared_link_url(item["url"]) == normalized:
+                return None, "Link này đã có trong danh sách rồi."
+        kind = detect_shared_link_kind(cleaned)
+        if not title:
+            title = SHARED_LINK_KIND_TITLES.get(kind) \
+                or shared_link_domain(cleaned) or "Link"
+        if len(title) > SHARED_LINK_TITLE_MAX_LEN:
+            title = title[:SHARED_LINK_TITLE_MAX_LEN]
+        seen_ids = {item["id"] for item in links}
+        link_id = "l-" + os.urandom(6).hex()
+        while link_id in seen_ids:
+            link_id = "l-" + os.urandom(6).hex()
+        link = {"id": link_id, "url": cleaned, "title": title,
+                "kind": kind, "added_by": "owner",
+                "added_at": int(now_epoch())}
+        links.insert(0, link)
+        write_json_file(_shared_links_path(root),
+                        {"version": 1, "links": links}, mode=0o600)
+    return link, None
+
+
+def delete_shared_link(root, link_id):
+    """Xoa 1 link theo id. Tra (link_da_xoa, None) khi xong,
+    (None, "Link không còn trong danh sách.") khi id sai mau hoac
+    khong ton tai (khong 404 — D-LC-08)."""
+    if not isinstance(link_id, str) \
+            or not SHARED_LINK_ID_RE.match(link_id):
+        return None, "Link không còn trong danh sách."
+    with _shared_links_lock(root):
+        links = _clean_shared_links(
+            read_json_file(_shared_links_path(root)))
+        for index, item in enumerate(links):
+            if item["id"] == link_id:
+                deleted = links.pop(index)
+                write_json_file(_shared_links_path(root),
+                                {"version": 1, "links": links},
+                                mode=0o600)
+                return deleted, None
+    return None, "Link không còn trong danh sách."
+
+
+# -- Trang thai thu gon/mở muc Link chung (D-LC-20) -------------------
+# Khoa rieng "shared-links-state": "open"|"closed" o cap cao nhat
+# cua ui_prefs.json, NGOAI dict collapsed (khoa vang = "unset" —
+# chua ai bam bao gio). KHONG nam trong UI_PREF_KEYS (13 khoa giu
+# nguyen), khong qua _normalize_ui_prefs / _write_ui_prefs_locked
+# (ham ghi giu nguyen extra nen khoa moi duoc giu).
+SHARED_LINKS_STATE_VALUES = ("open", "closed")
+
+
+def load_shared_links_state(root):
+    """Doc trang thai thu gon/mở: "open"|"closed"|"unset" (vang/la
+    -> "unset", khong crash). Doc tho qua _load_ui_prefs_raw, lay
+    tu dict extra."""
+    _collapsed, _theme, extra = _load_ui_prefs_raw(root)
+    state = extra.get("shared-links-state")
+    if state in SHARED_LINKS_STATE_VALUES:
+        return state
+    return "unset"
+
+
+def set_shared_links_state(root, state):
+    """Ghi trang thai thu gon/mở. Gia tri ngoai {"open","closed"}
+    -> ValueError (handler tra 400, khong ghi gi). Giu nguyen
+    collapsed + theme + khoa la khac. Tra (cu, moi)."""
+    if state not in SHARED_LINKS_STATE_VALUES:
+        raise ValueError("trạng thái không hợp lệ")
+    with _ui_prefs_lock(root):
+        collapsed, theme, extra = _load_ui_prefs_raw(root)
+        old = extra.get("shared-links-state")
+        if old not in SHARED_LINKS_STATE_VALUES:
+            old = "unset"
+        extra["shared-links-state"] = state
+        _write_ui_prefs_locked(root, collapsed, theme=theme,
+                               extra=extra)
+    return old, state
 
 
 def owner_account_of(entry):
@@ -1452,11 +1752,17 @@ def read_center_view_state(root):
                     entry, dict):
                 continue
             viewed_at = entry.get("viewed_at")
+            shown_at_issue = entry.get("shown_at_issue")
             state["accounts"][account_id] = {
                 "viewed_at": viewed_at if isinstance(
                     viewed_at, (int, float)) else None,
                 "rotated_after_view": bool(
                     entry.get("rotated_after_view")),
+                # HM (21/11, D-HM-26): giu co "da hien luc cap"
+                # (epoch thi giu, con lai None) — khong duoc lam roi
+                # khi chuan hoa nhu cac khoa hien co.
+                "shown_at_issue": shown_at_issue if isinstance(
+                    shown_at_issue, (int, float)) else None,
             }
     attempts = data.get("failed_attempts")
     if isinstance(attempts, dict):
@@ -1511,16 +1817,41 @@ def modify_center_view_state(root, mutate_fn):
     return result
 
 
+def mark_center_secret_shown_at_issue(root, account_id, now):
+    """Dat co "da hien luc cap" cho tai khoan (HM 21/11, D-HM-18):
+    ma da hien trong trang ket qua cap/xoay thi route xem ma chan
+    lai (ly do shown_at_issue), khong doc ma. Tao entry neu chua
+    co. File KHONG chua gia tri ma."""
+    def _mark(state):
+        entry = state["accounts"].get(account_id)
+        if entry is None:
+            entry = {"viewed_at": None, "rotated_after_view": False,
+                     "shown_at_issue": None}
+            state["accounts"][account_id] = entry
+        entry["shown_at_issue"] = now
+
+    modify_center_view_state(root, _mark)
+
+
 def mark_center_view_rotated(root, account_id):
     """Xoay mã xong: gỡ cờ nhắc "đã xem — chưa xoay" của tài khoản.
 
     Chỉ khi tài khoản đang có lượt xem chờ xoay (viewed_at đã đặt)
     thì đặt viewed_at=None + rotated_after_view=True và trả True
     (để audit center_secret_rotate ghi thêm trường đó — SPEC TS3).
-    Xoay mà không qua xem thì không đổi gì, trả False."""
+    Xoay mà không qua xem thì không đổi gì, trả False.
+
+    (HM 21/11, D-HM-18/N-07) Xoay ma moi luon xoa co
+    "shown_at_issue" cu — ke ca duong tra False (entry ton tai
+    nhung viewed_at la None): duong return som cu khong cham entry
+    nen co cu khong sach. Gia tri tra ve giu nguyen ngu nghia cu
+    (True chi khi co luot xem cho xoay bi go)."""
     def _mark(state):
         entry = state["accounts"].get(account_id)
-        if not entry or entry.get("viewed_at") is None:
+        if not entry:
+            return False
+        entry["shown_at_issue"] = None
+        if entry.get("viewed_at") is None:
             return False
         entry["viewed_at"] = None
         entry["rotated_after_view"] = True
@@ -1562,6 +1893,24 @@ def audit_has_center_view(root, account_id):
         if row.get("action") == "center_secret_view" \
                 and row.get("account_id") == account_id:
             return True
+    return False
+
+
+def audit_has_center_issue_show(root, account_id):
+    """True khi audit.jsonl co it nhat 1 dong center_secret_rotate
+    cua tai khoan voi after.shown_on_issue == True (HM 21/11,
+    D-HM-21/C-02: fail-closed cho co shown_at_issue khi file trang
+    thai mat — ma chi hien luc cap, chua tung xem, khong co dong
+    center_secret_view nen audit cu khong chan duoc). Audit la
+    best-effort, cung gioi han nhu audit_has_center_view (C-25)."""
+    for row in read_jsonl_rows(
+            Path(root) / "ui-config" / "audit.jsonl"):
+        if row.get("action") == "center_secret_rotate" \
+                and row.get("account_id") == account_id:
+            after = row.get("after") or {}
+            if isinstance(after, dict) \
+                    and after.get("shown_on_issue") is True:
+                return True
     return False
 
 

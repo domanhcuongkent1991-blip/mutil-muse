@@ -584,6 +584,76 @@ textarea { min-height: 90px; font-family: inherit; }
   /* (Xem truoc anh phuong an A, 21/11) Thu nho 120x90 o mobile. */
   .center-file-preview { width: 120px; height: 90px; }
 }
+/* --- Link chung trong tab Chat (21/11 — D-LC-12/13/14/18/19/20) --- */
+/* Khung muc: cung ngon ngu voi danh sach phong (nen var(--surface),
+   vien 1px var(--border), bo 16px), cach danh sach phong 16px.
+   Chi dung token co san, khong them mau moi (D-LC-13). */
+.shared-links {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; margin-top: 16px; padding: 12px;
+}
+.shared-links-head {
+  display: flex; align-items: center; gap: 8px;
+}
+.shared-links-head h3 { margin: 0; flex: 1; min-width: 0; }
+.shared-links-count { color: var(--gray); font-size: 14px; }
+.shared-links-toggle-form { margin: 0; }
+.shared-links-toggle {
+  min-width: 44px; min-height: 44px; padding: 8px 12px;
+}
+/* Nhan loai bang CHU (Drive/Docs/Sheets/Slides/Link), khong glyph
+   icon: token co san, cap da kiem chung o T3k (toi 10,42:1, sang
+   5,09:1 — D-LC-13c). */
+.shared-link-kind {
+  background: var(--secondary-bg); color: var(--secondary-text);
+  border-radius: 8px; padding: 4px 8px; font-size: 13px;
+  font-weight: 600; flex: 0 0 auto; align-self: flex-start;
+}
+.shared-links-list {
+  list-style: none; margin: 12px 0 0; padding: 0;
+}
+.shared-link-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  min-height: 44px; padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.shared-link-main { flex: 1; min-width: 0; }
+.shared-link-main a {
+  display: block; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--accent);
+}
+.shared-link-domain {
+  display: block; font-size: 13px; color: var(--gray);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.shared-link-delete { margin: 0; flex: 0 0 auto; }
+.shared-link-delete-btn {
+  width: 44px; height: 44px; min-width: 44px; min-height: 44px;
+  padding: 0; font-size: 20px; line-height: 1;
+}
+.shared-links-add { margin-top: 12px; }
+.shared-links-add label { display: block; margin: 8px 0 4px; }
+.shared-links-add input { width: 100%; }
+/* Focus ring cho nut/link moi theo token chung (khong them mau
+   moi — D-LC-18/G-11): outline bang --accent. */
+.shared-links a:focus-visible,
+.shared-links button:focus-visible,
+.shared-links input:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  /* Chua ai bam bao gio (unset): mobile mac dinh DONG — an danh
+     sach + form (desktop van mo). Khi da bam mo thi danh sach
+     cuon noi bo toi da 200px (SUA THEO GIA LAP LC-NS-01, 21/11:
+     160px la SUY LUAN D-LC-19, do that UC-L-10 thay hang link cao
+     61px nen 160px chi lo ~2,6 hang; 200px lo ~3,3 hang, gan dung
+     y do ~3,5 hang); form them nam NGOAI khung cuon. */
+  .shared-links[data-state="unset"] .shared-links-list,
+  .shared-links[data-state="unset"] .shared-links-add {
+    display: none;
+  }
+  .shared-links-list { max-height: 200px; overflow-y: auto; }
+}
 /* --- Cảnh báo (V2 §5) --- */
 .alert {
   background: var(--surface); border: 1px solid var(--border);
@@ -680,6 +750,24 @@ APP_JS = """
         hideBrokenPreview(imgs[i]);
       }
     }
+  });
+
+  // (Link chung, D-LC-18/G-11 — SUA THEO AUDIT A-NS-01, 21/11)
+  // Khi trang thai thu gon la "unset", may chu khong biet co man
+  // hinh nguoi xem nen luon render aria-expanded="false" theo
+  // mobile-dong; tren desktop (>= 721px, nguoc voi media query
+  // max-width: 720px ben CSS) muc dang MO san nen sua thanh
+  // "true" cho dung trang thai hien thi that (trinh doc man
+  // hinh). Chi sua thuoc tinh aria, khong doi nhan nut hay
+  // data-state; mobile giu nguyen "false".
+  document.addEventListener("DOMContentLoaded", function () {
+    if (!window.matchMedia ||
+        !window.matchMedia("(min-width: 721px)").matches) { return; }
+    document.querySelectorAll(
+      '.shared-links[data-state="unset"] .shared-links-toggle')
+      .forEach(function (btn) {
+        btn.setAttribute("aria-expanded", "true");
+      });
   });
 
   function refreshOne(el, delayMs, failures) {
@@ -1326,10 +1414,77 @@ APP_JS = """
 // "Sao chép" + nút "Đã chép xong, ẩn ngay" + xóa mã khi quay lại từ
 // bfcache (pageshow persisted). JS chỉ là tiện ích — rào chắn thật
 // là cờ "đã xem" phía máy chủ (DESIGN §3.11 bước 5).
+// Hien ma khi cap (21/11): nut "Hien lai ma" + giu gia tri trong closure
 (function () {
   "use strict";
 
+  // Giữ giá trị mã trong closure của trang (không ghi vào bộ nhớ
+  // trình duyệt, không gọi lại máy chủ). Ẩn chỉ thay text hiển thị; hiện lại khôi phục text
+  // từ closure + đếm ngược 30 giây mới. Đóng/tải lại trang thì closure
+  // mất; bfcache (pageshow persisted) hủy cả closure.
+  var secretValues = null; // {fetch: "...", push: "..."} | null
+  var countdownTimer = null; // id của setInterval đang chạy (G-01:
+  // showSecrets luu id timer MOI vao cung bien nay; hideSecrets dung
+  // dung timer hien tai — khong de 2 timer chay song song lam dem
+  // nguoc nhay 2 giay/lan)
+
+  function stopCountdown() {
+    if (countdownTimer !== null) {
+      window.clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+  }
+
+  function startCountdown(seconds) {
+    var countdown = document.getElementById("view-secret-countdown");
+    var remaining = seconds ||
+      (countdown ? (parseInt(countdown.textContent, 10) || 30) : 30);
+    if (countdown) { countdown.textContent = String(remaining); }
+    stopCountdown();
+    countdownTimer = window.setInterval(function () {
+      remaining -= 1;
+      if (remaining <= 0) {
+        stopCountdown();
+        hideSecrets();
+        return;
+      }
+      if (countdown) { countdown.textContent = String(remaining); }
+    }, 1000);
+  }
+
+  function showSecrets() {
+    if (!secretValues) { return; }
+    var fetchEl = document.getElementById("view-secret-fetch");
+    var pushEl = document.getElementById("view-secret-push");
+    if (fetchEl) { fetchEl.textContent = secretValues.fetch; }
+    if (pushEl) { pushEl.textContent = secretValues.push; }
+    document.querySelectorAll(".view-secret-copy").forEach(
+      function (btn) { btn.disabled = false; });
+    var showAgain = document.getElementById("view-secret-show-again");
+    if (showAgain) { showAgain.hidden = true; }
+    startCountdown(30);
+  }
+
+  function hideSecrets() {
+    // Cau giu cho theo nut co render hay khong (duong du phong
+    // §3.3b: nut vang -> cau cu "xoay ma moi de xem lai").
+    var showAgain = document.getElementById("view-secret-show-again");
+    var hiddenText = showAgain ?
+      "Đã ẩn — bấm “Hiện lại mã” để xem lại." :
+      "Đã ẩn — xoay mã mới để xem lại.";
+    document.querySelectorAll(".view-secret-value").forEach(
+      function (el) { el.textContent = hiddenText; });
+    document.querySelectorAll(".view-secret-copy").forEach(
+      function (btn) { btn.disabled = true; });
+    var countdown = document.getElementById("view-secret-countdown");
+    if (countdown) { countdown.textContent = "0"; }
+    stopCountdown();
+    if (showAgain) { showAgain.hidden = false; }
+  }
+
   function clearViewSecrets() {
+    secretValues = null;
+    stopCountdown();
     document.querySelectorAll(".view-secret-value").forEach(
       function (el) {
         el.textContent = "Đã ẩn — xoay mã mới để xem lại.";
@@ -1338,6 +1493,8 @@ APP_JS = """
       function (btn) { btn.disabled = true; });
     var countdown = document.getElementById("view-secret-countdown");
     if (countdown) { countdown.textContent = "0"; }
+    var showAgain = document.getElementById("view-secret-show-again");
+    if (showAgain) { showAgain.hidden = true; showAgain.disabled = true; }
   }
 
   function copySecret(button) {
@@ -1359,28 +1516,26 @@ APP_JS = """
 
   document.addEventListener("DOMContentLoaded", function () {
     if (!document.getElementById("view-secret-values")) { return; }
-    var countdown = document.getElementById("view-secret-countdown");
-    var remaining = countdown ?
-      (parseInt(countdown.textContent, 10) || 30) : 30;
-    var timer = window.setInterval(function () {
-      remaining -= 1;
-      if (remaining <= 0) {
-        window.clearInterval(timer);
-        clearViewSecrets();
-        return;
-      }
-      if (countdown) { countdown.textContent = String(remaining); }
-    }, 1000);
+    var fetchEl = document.getElementById("view-secret-fetch");
+    var pushEl = document.getElementById("view-secret-push");
+    if (fetchEl && pushEl) {
+      secretValues = {
+        fetch: fetchEl.textContent,
+        push: pushEl.textContent
+      };
+    }
+    startCountdown();
     document.querySelectorAll(".view-secret-copy").forEach(
       function (btn) {
         btn.addEventListener("click", function () { copySecret(btn); });
       });
     var hideNow = document.getElementById("view-secret-hide-now");
     if (hideNow) {
-      hideNow.addEventListener("click", function () {
-        window.clearInterval(timer);
-        clearViewSecrets();
-      });
+      hideNow.addEventListener("click", function () { hideSecrets(); });
+    }
+    var showAgain = document.getElementById("view-secret-show-again");
+    if (showAgain) {
+      showAgain.addEventListener("click", function () { showSecrets(); });
     }
   });
 
