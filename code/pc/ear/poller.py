@@ -494,6 +494,11 @@ class Poller:
         return self._backoff(self.consec_err)
 
     def _process_events(self, response):
+        """Xử lý 1 đợt event Zalo; 1 event lỗi chỉ mất event đó.
+
+        Zalo không gửi bù — event lỗi bị bỏ là mất vĩnh viễn; offset bền
+        không cứu được nên không làm (D-2.1-3).
+        """
         body = response.get("body")
         if not isinstance(body, dict):
             self._log("poll ok nhưng body không phải object, bỏ qua đợt")
@@ -501,22 +506,32 @@ class Poller:
         events = iter_events(body.get("result"))
         queued = 0
         duplicates = 0
+        skipped = 0
         for event in events:
-            record = parse_event(self.bot_id, event)
-            platform_event_id = record["platform_event_id"]
-            if platform_event_id in self.seen_store:
-                duplicates += 1
+            event_id = event.get("event_id") if isinstance(event, dict) else None
+            try:
+                record = parse_event(self.bot_id, event)
+                platform_event_id = record["platform_event_id"]
+                if platform_event_id in self.seen_store:
+                    duplicates += 1
+                    continue
+                # Thứ tự bắt buộc: ghi queue bền TRƯỚC, cập nhật seen SAU.
+                seq = self.queue_store.append(
+                    record, record["event_id"],
+                    received_at=record["received_at"],
+                )
+                self.seen_store.add(platform_event_id)
+            except Exception as exc:  # noqa: BLE001 - 1 event hong khong duoc sap ca dot
+                skipped += 1
+                self._log("bo event loi event_id=%s class=%s (Zalo khong gui bu — event nay mat)"
+                          % (event_id or "unknown", type(exc).__name__))
                 continue
-            # Thứ tự bắt buộc: ghi queue bền TRƯỚC, cập nhật seen SAU.
-            seq = self.queue_store.append(
-                record, record["event_id"],
-                received_at=record["received_at"],
-            )
-            self.seen_store.add(platform_event_id)
             queued += 1
             self._log("queued seq=%d event_id=%s chat=%s"
                       % (seq, record["event_id"],
                          self._short_chat(record["chat_id"])))
         if duplicates:
             self._log("bỏ %d event trùng (đã thấy)" % duplicates)
+        if skipped:
+            self._log("bo %d event loi trong dot nay" % skipped)
         return queued

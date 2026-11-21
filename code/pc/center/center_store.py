@@ -2296,8 +2296,9 @@ class CenterStore:
         """Cap nhat moc da doc cua chu nhan cho phong — CHI TANG,
         khong giam. Tra ve moc moi.
 
-        GET co tac dung phu ghi, CO CHU DICH (NS-08): chi goi khi
-        phuc vu fragment chat cua phong dang mo (polling 5 giay).
+        LUAT DA DOC MOI (v0.6.0, T3i — thay NS-08 cu): phuc vu
+        fragment chat KHONG tu danh dau da doc — chi goi ham nay
+        khi chu nhan bam vien "N tin moi" (POST /center/mark-read).
         """
         room = parse_room(room)
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from urllib.parse import quote, urlencode
 
 from pc.ui.ui_store import (
@@ -2875,6 +2876,15 @@ def _transfer_section_html(summary, csrf_token):
     bot_id = summary["bot_id"]
     transfer = summary.get("transfer")
     if not transfer:
+        # G1 (D-G1-2): bot chua gan thi thay link "Chuyen bot" bang nut
+        # "Gan bot vao tai khoan" dan toi form Sua bot — CHI 1 vi tri
+        # nay (khong dat them nut canh nut "Sua bot" o muc Cau hinh).
+        # summary["owner_account"] la owner_account_of(entry).
+        if not summary.get("owner_account"):
+            return (
+                '<div class="actions"><a class="btn" href="/bots/%s/edit">'
+                "Gắn bot vào tài khoản</a></div>"
+            ) % esc(bot_id)
         return (
             '<div class="actions"><a class="btn" href="/bots/%s/transfer">'
             "Chuyển bot sang tài khoản khác</a></div>"
@@ -3742,6 +3752,22 @@ def _transfer_hidden_fields(transfer, csrf_token):
     )
 
 
+def transfer_unlabelled_guide_html(bot_id, display_name, csrf_token):
+    """Trang hướng dẫn khi bot chưa gắn tài khoản (G1): không mở
+    wizard chuyển bot, dẫn sang form Sửa bot. Không có form POST nào
+    trên trang này (không còn đường nào tạo luồng)."""
+    body = (
+        "<h1>Chuyển bot %s</h1>"
+        "<p>Bot chưa gắn tài khoản nào — không cần chuyển bot. Để gắn "
+        "bot vào một tài khoản, mở form Sửa bot và chọn Tài khoản quản "
+        "lý.</p>"
+        '<div class="actions"><a class="btn" href="/bots/%s/edit">'
+        "Mở form Sửa bot</a>"
+        ' <a class="btn" href="/bots/%s">Về trang bot</a></div>'
+    ) % (esc(display_name), esc(bot_id), esc(bot_id))
+    return layout("Chuyển bot", body, csrf_token=csrf_token)
+
+
 def transfer_start_page_html(bot_id, display_name, accounts, csrf_token,
                              current_owner, errors=None):
     """Form bắt đầu luồng chuyển: chọn tài khoản cũ + đích trong 1 POST
@@ -3862,17 +3888,44 @@ def _step_submit(label="Xong mốc này, sang mốc tiếp"):
 
 
 def _render_step1(bot_id, transfer, context, csrf_token, eval_result):
-    quiet, last_fetch = context.get("quiet", (True, None))
+    quiet, detail = context.get("quiet", (True, {}))
+    if not isinstance(detail, dict):
+        detail = {}
     gateway_status = context.get("gateway_status", "unknown")
-    if last_fetch is None:
-        quiet_line = "Chưa từng thấy lần lấy tin nào cho bot này — coi như đã lặng."
+    now = time.time()
+    # 2.11 (D-2.11-4): dong lang viet lai tu `detail` cua
+    # fetch_quiet_info_by_label (nhan cu + gio lay cuoi + luot khong
+    # nhan), khong dung moc chung 90 giay nua.
+    if detail.get("no_data"):
+        quiet_line = ("Không đo được nhãn lấy tin (gateway chưa ghi nhãn) "
+                      "— chỉ dựa vào xác nhận của chủ nhân.")
     elif quiet:
-        quiet_line = (
-            "Lần lấy tin cuối cách đây đủ 90 giây trở lên — đã lặng.")
+        quiet_line = ("Không còn nhãn cũ nào lấy tin trong 5 phút gần "
+                      "nhất — đã lặng.")
     else:
-        quiet_line = (
-            "Mới thấy lấy tin gần đây (chưa đủ 90 giây lặng) — đợi thêm "
-            "rồi thử lại.")
+        blocking = detail.get("blocking_labels") or []
+        last_old = detail.get("last_old_seen")
+        if blocking:
+            if last_old is not None:
+                when = time.strftime("%H:%M:%S",
+                                     time.localtime(last_old))
+                ago = max(0, int(now - last_old))
+                quiet_line = (
+                    "Nhãn %s vẫn đang lấy tin — lần cuối lúc %s (cách "
+                    "đây %d giây)." % (", ".join(blocking), when, ago))
+            else:
+                quiet_line = "Nhãn %s vẫn đang lấy tin." % (
+                    ", ".join(blocking))
+            if detail.get("unlabelled_recent"):
+                quiet_line += (
+                    " Ngoài ra còn thấy lượt lấy tin không ghi nhãn "
+                    "trong 5 phút gần nhất — kiểm tra fetcher chưa nâng "
+                    "cấp (chưa ghi nhãn) rồi dừng nó.")
+        else:
+            quiet_line = (
+                "Thấy lượt lấy tin không ghi nhãn trong 5 phút gần "
+                "nhất — kiểm tra fetcher chưa nâng cấp (chưa ghi nhãn) "
+                "rồi dừng nó.")
     if gateway_status == "active":
         gateway_line = (
             '<p>Trạng thái đo được: unit gateway đang active.</p>')
@@ -3895,19 +3948,26 @@ def _render_step1(bot_id, transfer, context, csrf_token, eval_result):
         confirm_text = (
             "Tôi đã dừng lấy tin ở tài khoản cũ và xác nhận không còn "
             "lấy tin.")
+        # 2.11 (D-2.11-5): chen ten nhan cu vao cau huong dan.
+        guide_line = (
+            "Việc này cần làm ở phía tài khoản cũ (%s): dừng fetcher "
+            "(tắt service hoặc xóa fetcher-config). Sau đó tick xác nhận."
+            % from_label)
     else:
         confirm_text = (
             "Tôi xác nhận không có tài khoản nào đang lấy tin bot này.")
+        guide_line = (
+            "Việc này cần làm ở phía tài khoản cũ: dừng fetcher (tắt "
+            "service hoặc xóa fetcher-config). Sau đó tick xác nhận.")
     return (
         "<h2>Mốc 1: Dừng lấy tin ở tài khoản cũ</h2>"
         "<p>%s</p>%s%s"
-        "<p>Việc này cần làm ở phía tài khoản cũ: dừng fetcher (tắt "
-        "service hoặc xóa fetcher-config). Sau đó tick xác nhận.</p>"
+        "<p>%s</p>"
         "%s"
         '<label><input type="checkbox" name="confirm" value="yes"> %s'
         "</label>"
         "%s"
-        % (esc(quiet_line), gateway_line, gate_note,
+        % (esc(quiet_line), gateway_line, gate_note, esc(guide_line),
            _step_form_open(bot_id, transfer, csrf_token, 1),
            esc(confirm_text), _step_submit())
     )

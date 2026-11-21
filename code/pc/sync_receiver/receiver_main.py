@@ -291,12 +291,32 @@ def load_reply_keys(path):
     return keys
 
 
-def prune_replies_file(path, max_age_days=PRUNE_MAX_AGE_DAYS, now=None):
+def _wait_test_pause(pause):
+    """Seam chi dung trong test (G4): tam dung giua luc doc xong file
+    va luc os.replace. Nhan tuple (read_done, release): bao read_done
+    roi cho release toi da 10 s; hoac 1 Event don: set roi cho test
+    clear (toi da 10 s). Production truyen None = khong dung."""
+    if isinstance(pause, (tuple, list)) and len(pause) == 2:
+        read_done, release = pause
+        read_done.set()
+        release.wait(timeout=10)
+        return
+    pause.set()
+    deadline = time.monotonic() + 10
+    while pause.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def prune_replies_file(path, max_age_days=PRUNE_MAX_AGE_DAYS, now=None,
+                       _test_pause_after_read=None):
     """Cắt tỉa file trả lời theo tuổi ``sent_at`` (04 §4).
 
     Giữ dòng không parse được và dòng còn trong hạn; cắt dòng quá
     ``max_age_days``. Ghi lại kiểu tmp+rename khi có cắt. Trả về dict
     thống kê {"cut", "kept", "unparseable_kept"}.
+
+    CHỈ gọi khi đã giữ khóa của ReceiverContext (xem ``prune_all``);
+    không gọi trực tiếp từ luồng nền. Hàm này tự nó không khóa.
     """
     if now is None:
         now = datetime.now().astimezone()
@@ -331,6 +351,8 @@ def prune_replies_file(path, max_age_days=PRUNE_MAX_AGE_DAYS, now=None):
     if cut == 0:
         return {"cut": 0, "kept": len(keep_lines),
                 "unparseable_kept": unparseable}
+    if _test_pause_after_read is not None:
+        _wait_test_pause(_test_pause_after_read)
     tmp_path = path.with_suffix(".jsonl.tmp")
     with open(tmp_path, "w", encoding="utf-8") as handle:
         handle.writelines(keep_lines)
@@ -367,6 +389,16 @@ class ReceiverContext:
             self._known_keys[bot_id] = load_reply_keys(
                 replies_path(self.root, bot_id))
             self._loaded_bots.add(bot_id)
+
+    def _resync_known_keys_locked(self, bot_id):
+        """Đọc lại _known_keys[bot_id] từ file thật sau prune.
+
+        Hậu tố _locked (mẫu NS-01): giả định đã giữ self._lock, không
+        tự khóa. Chỉ làm khi bot đã load; bot chưa load thì lần append
+        đầu sẽ nạp từ file đã prune."""
+        if bot_id in self._loaded_bots:
+            self._known_keys[bot_id] = load_reply_keys(
+                replies_path(self.root, bot_id))
 
     def check_rate_limit(self, bot_id):
         """True nếu được phép xử lý request này (đủ giãn cách). Ghi
@@ -423,8 +455,19 @@ class ReceiverContext:
             accepted = len(fresh)
         return accepted, duplicates
 
-    def prune_all(self, now=None):
-        """Cắt tỉa file trả lời của mọi bot trong registry."""
+    def prune_all(self, now=None, _test_pause_after_read=None):
+        """Cắt tỉa file trả lời của mọi bot trong registry.
+
+        Giữ self._lock theo từng bot, bao trọn 1 chu trình đọc-sửa-ghi
+        của bot đó (D-G4-2). Giả định: 1 tiến trình receiver duy nhất
+        trên 1 root dữ liệu — đua là đua trong tiến trình nên
+        threading.Lock chung là đủ; nếu sau này chạy 2 receiver cùng
+        root thì phải nâng lên flock (lúc đó sửa thiết kế, không sửa
+        lén). KHÔNG gọi prune_all từ bất kỳ hàm nào đang giữ self._lock
+        (append_entries, check_rate_limit đều giữ khóa); _prune_loop chỉ
+        gọi từ thread riêng, main gọi lúc khởi động trước khi server
+        nhận request — không lồng khóa (NS-01).
+        """
         data = read_json_file(self.root / "registry.json")
         bot_ids = []
         if isinstance(data, dict):
@@ -437,11 +480,14 @@ class ReceiverContext:
         for bot_id in bot_ids:
             if not isinstance(bot_id, str) or not BOT_ID_RE.match(bot_id):
                 continue
-            stats = prune_replies_file(
-                replies_path(self.root, bot_id), now=now)
-            if stats["cut"]:
-                self.log("receiver prune bot=%s cut=%d kept=%d"
-                         % (bot_id, stats["cut"], stats["kept"]))
+            with self._lock:
+                stats = prune_replies_file(
+                    replies_path(self.root, bot_id), now=now,
+                    _test_pause_after_read=_test_pause_after_read)
+                if stats["cut"]:
+                    self._resync_known_keys_locked(bot_id)
+                    self.log("receiver prune bot=%s cut=%d kept=%d"
+                             % (bot_id, stats["cut"], stats["kept"]))
 
 
 def make_handler(ctx):

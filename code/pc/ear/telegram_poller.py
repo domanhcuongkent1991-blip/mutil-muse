@@ -728,21 +728,27 @@ class TelegramPoller:
             def _download(attachment, event_id, _token=token, _seq=seq_hint):
                 return self._download_attachment(_token, attachment, event_id, _seq)
 
-            record, reason = parse_update(
-                update, self.bot_id, bot_username=self.bot_username,
-                download_fn=_download, log_fn=self._log,
-            )
-            if record is None:
+            try:
+                record, reason = parse_update(
+                    update, self.bot_id, bot_username=self.bot_username,
+                    download_fn=_download, log_fn=self._log,
+                )
+                if record is None:
+                    skipped += 1
+                    self._log("bo qua update_id=%d: %s" % (update_id, reason))
+                    continue
+                # Thu tu bat buoc: ghi queue ben TRUOC, cap nhat seen SAU,
+                # offset luu SAU khi ghi queue (cuoi dot).
+                seq = self.queue_store.append(
+                    record, record["event_id"],
+                    received_at=record["received_at"],
+                )
+                self.seen_store.add(key)
+            except Exception as exc:  # noqa: BLE001 - 1 update hong khong duoc sap ca dot
                 skipped += 1
-                self._log("bo qua update_id=%d: %s" % (update_id, reason))
+                self._log("bo update loi update_id=%d class=%s"
+                          % (update_id, type(exc).__name__))
                 continue
-            # Thu tu bat buoc: ghi queue ben TRUOC, cap nhat seen SAU,
-            # offset luu SAU khi ghi queue (cuoi dot).
-            seq = self.queue_store.append(
-                record, record["event_id"],
-                received_at=record["received_at"],
-            )
-            self.seen_store.add(key)
             queued += 1
             self._log("queued seq=%d event_id=%s chat=%s"
                       % (seq, record["event_id"],
@@ -752,6 +758,9 @@ class TelegramPoller:
         if skipped:
             self._log("bo qua %d update (khong xu ly)" % skipped)
         if max_update_id is not None:
+            # Update bi bo (parse loi / ghi queue loi) van bi bo qua vinh
+            # vien: offset cuoi dot tien toi max_update_id + 1 nhu cu —
+            # danh doi da biet, duoc log tung update (D-2.1-2).
             new_offset = max_update_id + 1
             if new_offset > self.offset:
                 self.offset = new_offset

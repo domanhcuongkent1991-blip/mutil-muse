@@ -18,6 +18,7 @@ import fcntl
 import json
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -642,12 +643,102 @@ def evaluate_step7(root, bot_id, transfer, now, fetch_state=None,
 
 def fetch_quiet_info(fetch_state, bot_id, now):
     """(quiet, last_fetch_epoch): lặng khi chưa từng fetch hoặc lần
-    fetch cuối cách đây ≥90 giây (doc 09 §7)."""
+    fetch cuối cách đây ≥90 giây (doc 09 §7).
+
+    Chi dung khi khong co nhan cu de xet; cong moc 1 dung
+    `fetch_quiet_info_by_label` (2.11, 21/11)."""
     entry = ui_store.fetch_state_entry(fetch_state, bot_id)
     last_fetch = ui_store.parse_iso_to_epoch(entry.get("last_fetch_at"))
     if last_fetch is None:
         return True, None
     return (now - last_fetch >= ui_store.TRANSFER_QUIET_SECONDS), last_fetch
+
+
+def fetch_quiet_info_by_label(fetch_state, bot_id, old_labels, now):
+    """(quiet, detail): lặng khi KHÔNG CÒN nhãn cũ nào lấy trong 5 phút
+    (DUAL_FETCH_WINDOW_SECONDS) và không còn lượt không-nhãn trong 5 phút.
+    old_labels: tập nhãn cũ = {from_account_id, from_label_at_start} (bỏ rỗng).
+    detail: {"last_old_seen": epoch|None, "blocking_labels": [...],
+             "unlabelled_recent": bool, "no_data": bool} — để UI viết
+    thông báo chẩn đoán được.
+
+    Mau check2 moc 7 (transfers.py:478–490): doc `last_seen_at` tung
+    nhan cu + `unlabelled.last_seen_at`, chan khi bat ky moc nao
+    ≤300 s. KHONG dung `active_fetch_labels` cho cong nay — ham do
+    doi ≥2 moc trong cua so moi tinh la "dang hoat dong", nhan cu
+    chi lay 1 lan trong 5 phut qua se khong chan -> cong mo oan.
+    `no_data` (hoan toan khong co truong nhan nao — gateway cu) thi
+    lang de UI cho qua bang xac nhan + ghi chu noi bat."""
+    entry = ui_store.fetch_state_entry(fetch_state, bot_id)
+    fetch_labels = entry.get("fetch_labels")
+    if not isinstance(fetch_labels, dict):
+        fetch_labels = {}
+    no_data = "fetch_labels" not in entry and "unlabelled" not in entry
+    window = ui_store.DUAL_FETCH_WINDOW_SECONDS
+    blocking = []
+    last_old_seen = None
+    for label in sorted(old_labels or ()):
+        if not label:
+            continue
+        info = fetch_labels.get(label)
+        if not isinstance(info, dict):
+            continue
+        last_seen = ui_store.parse_iso_to_epoch(info.get("last_seen_at"))
+        if last_seen is not None and now - last_seen <= window:
+            blocking.append(label)
+            if last_old_seen is None or last_seen > last_old_seen:
+                last_old_seen = last_seen
+    unlabelled_recent = False
+    raw_unlabelled = entry.get("unlabelled")
+    if isinstance(raw_unlabelled, dict):
+        last_un = ui_store.parse_iso_to_epoch(
+            raw_unlabelled.get("last_seen_at"))
+        if last_un is not None and now - last_un <= window:
+            unlabelled_recent = True
+    if no_data:
+        return True, {"last_old_seen": None, "blocking_labels": [],
+                      "unlabelled_recent": False, "no_data": True}
+    quiet = not blocking and not unlabelled_recent
+    return quiet, {"last_old_seen": last_old_seen,
+                   "blocking_labels": blocking,
+                   "unlabelled_recent": unlabelled_recent,
+                   "no_data": False}
+
+
+def format_step1_block_message(detail, now):
+    """Thong bao chan moc 1 chuan doan duoc (2.11, D-2.11-5 — giu
+    nguyen van cau chu thiet ke)."""
+    blocking = detail.get("blocking_labels") or []
+    parts = []
+    if blocking:
+        labels_text = ", ".join(blocking)
+        last_old = detail.get("last_old_seen")
+        if last_old is not None:
+            when = time.strftime("%H:%M:%S",
+                                 time.localtime(last_old))
+            ago = max(0, int(now - last_old))
+            parts.append(
+                "Tài khoản cũ (%s) vẫn đang lấy tin — lần lấy cuối lúc "
+                "%s (cách đây %d giây). Dừng fetcher ở tài khoản %s "
+                "(tắt service hoặc xóa fetcher-config) rồi thử lại."
+                % (labels_text, when, ago, labels_text))
+        else:
+            parts.append(
+                "Tài khoản cũ (%s) vẫn đang lấy tin. Dừng fetcher ở "
+                "tài khoản %s (tắt service hoặc xóa fetcher-config) "
+                "rồi thử lại." % (labels_text, labels_text))
+    if detail.get("unlabelled_recent"):
+        if blocking:
+            parts.append(
+                "Ngoài ra còn thấy lượt lấy tin không ghi nhãn trong "
+                "5 phút gần nhất — kiểm tra fetcher chưa nâng cấp "
+                "(chưa ghi nhãn) rồi dừng nó.")
+        else:
+            parts.append(
+                "Thấy lượt lấy tin không ghi nhãn trong 5 phút gần "
+                "nhất — kiểm tra fetcher chưa nâng cấp (chưa ghi nhãn) "
+                "rồi dừng nó.")
+    return " ".join(parts)
 
 
 def combine_reason(choice, note):

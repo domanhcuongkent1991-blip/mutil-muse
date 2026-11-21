@@ -229,6 +229,12 @@ def _security_headers():
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
         "X-Frame-Options": "DENY",
+        # 2.25 (D-2.25-1): toan van tin nhan (UI4) + khoi K3 khong duoc
+        # trinh duyet/proxy giu lai. `_with_security` dung setdefault
+        # nen route nao da dat Cache-Control rieng (favicon, static,
+        # xem ma, download) thi giu nguyen gia tri rieng.
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
     }
 
 
@@ -5109,8 +5115,13 @@ class UiApp:
             except Exception:
                 gateway_status = "unknown"
             context["gateway_status"] = gateway_status
-            context["quiet"] = transfers.fetch_quiet_info(
-                fetch_state, bot_id, now)
+            # 2.11 (D-2.11-4): cong lang-fetch moc 1 xet theo nhan cu
+            # 5 phut — GET va POST dung chung 1 ham moi de noi cung
+            # 1 thu.
+            old_labels = {transfer.get("from_account_id"),
+                          transfer.get("from_label_at_start")} - {None, ""}
+            context["quiet"] = transfers.fetch_quiet_info_by_label(
+                fetch_state, bot_id, old_labels, now)
         elif step == 2:
             state = ui_store.read_state(self.root, bot_id)
             latest = state.get("queue_latest_seq")
@@ -5139,6 +5150,16 @@ class UiApp:
             return self._method_not_allowed(session)
         record = self._active_transfer(bot_id)
         if record is None:
+            # G1 (D-G1-1): bot chua gan thi khong mo duoc wizard bang
+            # bat ky duong nao — tra trang huong dan thay vi form bat
+            # dau. Luong dang chuyen do thi ve moc hien tai nhu cu
+            # (khong hoi to huy).
+            if ui_store.owner_account_of(entry) is None:
+                return self._with_security(Response.html(
+                    200,
+                    ui_pages.transfer_unlabelled_guide_html(
+                        bot_id, entry.get("display_name") or bot_id,
+                        session["csrf_token"])))
             return self._with_security(Response.html(
                 200,
                 ui_pages.transfer_start_page_html(
@@ -5155,6 +5176,15 @@ class UiApp:
         now = time.time()
         accounts = dict(self._accounts_list())
         from_id = request.form_value("from_account_id") or None
+        # G1 (D-G1-1): luoi cuoi — POST from=null bi chan ngay day,
+        # TRUOC moi kiem tra khac: khong tao record, khong ghi audit
+        # "ok", khong ghi su kien `started`.
+        if from_id is None:
+            return self._with_security(Response.html(
+                200,
+                ui_pages.transfer_unlabelled_guide_html(
+                    bot_id, entry.get("display_name") or bot_id,
+                    session["csrf_token"])))
         to_id = request.form_value("to_account_id") or None
         errors = []
         if to_id is None or to_id not in accounts:
@@ -5272,28 +5302,33 @@ class UiApp:
         elif step == 5:
             context["fetch_state"] = ui_store.read_fetch_state(self.root)
         gateway_status = None
+        quiet_detail = {}
         if step == 1:
             try:
                 gateway_status = self.gateway_status_fn()
             except Exception:
                 gateway_status = "unknown"
-            quiet, _last = transfers.fetch_quiet_info(
-                ui_store.read_fetch_state(self.root), bot_id, now)
-            if gateway_status == "active" and not quiet:
-                return self._render_transfer_step(
-                    session, bot_id, entry, record,
-                    errors=["Chưa đủ 90 giây lặng lấy tin — đợi thêm rồi "
-                            "thử lại."])
             if gateway_status == "inactive":
                 # I5 (doc 09 §4.3 mốc 1): đo được unit gateway inactive
                 # thì KHÔNG cho qua — lặng-fetch không đáng tin khi
                 # gateway chết. Chỉ đường "không đo được" mới cho qua
-                # bằng xác nhận của chủ nhân.
+                # bằng xác nhận của chủ nhân. Xet TRUOC cong lang.
                 return self._render_transfer_step(
                     session, bot_id, entry, record,
                     errors=["Unit gateway đang không active — không kiểm "
                             "chứng được lặng-fetch. Bật lại gateway rồi "
                             "thử lại."])
+            # 2.11 (D-2.11-4): cong lang-fetch xet theo nhan cu 5 phut.
+            old_labels = {record.get("from_account_id"),
+                          record.get("from_label_at_start")} - {None, ""}
+            quiet, quiet_detail = transfers.fetch_quiet_info_by_label(
+                ui_store.read_fetch_state(self.root), bot_id, old_labels,
+                now)
+            if gateway_status == "active" and not quiet:
+                return self._render_transfer_step(
+                    session, bot_id, entry, record,
+                    errors=[transfers.format_step1_block_message(
+                        quiet_detail, now)])
         try:
             detail, updates = transfers.validate_step_fields(
                 step, form, record, context)
@@ -5305,6 +5340,12 @@ class UiApp:
             # bị chặn ở trên — I5): ghi rõ chỉ dựa vào xác nhận.
             detail["note"] = ("Không đo được trạng thái unit gateway — "
                               "chỉ dựa vào xác nhận của chủ nhân.")
+        elif step == 1 and quiet_detail.get("no_data"):
+            # 2.11 (D-2.11-2): fetch-state khong co truong nhan nao
+            # (gateway cu) — cho qua bang xac nhan + ghi chu noi bat.
+            detail["note"] = ("Không đo được nhãn lấy tin (gateway chưa "
+                              "ghi nhãn) — chỉ dựa vào xác nhận của chủ "
+                              "nhân.")
         try:
             with self._bot_lock(bot_id):
                 fresh = self._active_transfer(bot_id, now)
