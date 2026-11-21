@@ -1872,9 +1872,12 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
                          stopped_rounds=None):
     """Tab Chat rieng, mo hinh A (v0.6.0, T3i — DOI Q-T3-05): cot
     trai danh sach phong (300px) + cot phai khung chat; khoang cach
-    2 cot 16px; dien thoai <= 720px xep doc (CSS). Hop chat co dinh
-    65vh/tối thiểu 400px (dien thoai 40vh/320px — SUA L1 21/11, da
-    duoc chu nhan chot), 1 co, khong nut phong to/thu nho. Vien "N tin moi" + nut "Ve cuoi" nam tren hop
+    2 cot 16px; dien thoai <= 720px xep doc (CSS). Hop chat tab Chat
+    desktop cao calc(100vh - 266px), toi thieu 400px (B2, 21/11;
+    dien thoai 40vh/320px — SUA L1 21/11, da duoc chu nhan chot);
+    quy tac goc 65vh chi con cho hop TINH trang chi tiet viec
+    (ngoai .center-chat-section), 1 co, khong nut phong to/thu nho.
+    Vien "N tin moi" + nut "Ve cuoi" nam tren hop
     chat (JS dieu khien); o nhap + form tao viec KHONG o day (form
     tao viec o tab Trung tam). Phong luu tru: chi xem, khong o
     nhap. ``typing_names``: ten tai khoan dang tra loi trong phong

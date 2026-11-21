@@ -84,7 +84,7 @@ body {
   body { max-width: 1100px; margin: 0 auto; }
 }
 @media (min-width: 1000px) {
-  body { max-width: 1280px; }
+  body { max-width: 1600px; }
 }
 a { color: var(--accent); }
 h1 { font-size: 28px; margin: 16px 0 8px; font-weight: 500; }
@@ -488,9 +488,12 @@ textarea { min-height: 90px; font-family: inherit; }
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   background: var(--typing); margin-left: 4px; flex: 0 0 auto;
 }
-/* Hop chat co dinh 65vh, toi thieu 400px (dien thoai <= 720px:
+/* Hop chat: quy tac goc 65vh, toi thieu 400px (dien thoai <= 720px:
    40vh/320px — SUA L1 21/11, da duoc chu nhan chot), 1 co, khong
-   nut phong to/thu nho. */
+   nut phong to/thu nho. (B2, 21/11) Tren desktop tab Chat hop nay
+   bi ghi de bang calc(100vh - 266px) trong .center-chat-section
+   (xem ben duoi); 65vh chi con hieu luc cho hop TINH trang chi
+   tiet viec (ngoai section). */
 .center-chat-box-wrap { position: relative; }
 /* (SUA B3/B4 + L2, 21/11 — THAY anchor sticky cu) Vien "N tin
    moi" + nut "Ve cuoi" la con TRUC TIEP cua wrap (position:
@@ -507,6 +510,25 @@ textarea { min-height: 90px; font-family: inherit; }
   background: var(--surface); padding: 12px;
 }
 .center-chat-box--static { margin: 8px 0; }
+/* Phuong an B2 (21/11 — THIET-KE-KHUNG-CHAT-B-21-11.md §3.3): hop
+   chat tab Chat cao truc tiep bang calc, form day du giu nguyen
+   nam duoi hop, trang cuon de toi form (danh doi da chot §1.4).
+   H = chrome tren + dem day trang, tinh lai tu CSS that (UC-B-01):
+   topbar 69 + h1 67 + thanh tab 90 + dem day 40 = 266px. Hop cao
+   co dinh theo calc(100vh - 266px) nen margin-collapse h1/tab chi
+   doi khoang cach tren hop, khong doi chieu cao hop; clientHeight
+   thuc ~812px o 1080p (814 - 2px vien tren+duoi, box-sizing:
+   border-box), trong dai G-BRW B-02 800-830px. (Ghi chu B2-G01:
+   vien .tabs 1px x2 lam tab thuc ~92px, H chat ~268px, lech 2px
+   — khong can doi code.) Tien to
+   .center-chat-section la BAT BUOC: hop tinh trang chi tiet viec
+   (ngoai section) giu 65vh/400px. Khong flex, khong JS, khong doi
+   hang JS (D-B-03/D-B-04/D-B-05). */
+@media (min-width: 721px) {
+  .center-chat-section .center-chat-box {
+    height: calc(100vh - 266px); min-height: 400px;
+  }
+}
 /* Dong dan o cuoi tab Trung tam sang tab Chat (T3i). */
 .center-chat-lead { font-size: 16px; font-weight: 500; margin: 16px 0; }
 /* Vien "N tin moi" (v0.6.0, T3i): nen do ruou, chu trang, bo 16px,
