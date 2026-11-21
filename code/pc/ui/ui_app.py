@@ -1988,9 +1988,16 @@ class UiApp:
     def _handle_center_file_download(self, request, session, file_id):
         """GET /center/files/<file_id> — chu nhan tai file dinh kem ve
         (v0.2.5, Q-C7). Chi doc (GET), phien dang nhap, khong CSRF.
-        File khong ton tai / bytes lech sidecar -> 404 chung. Tra
-        octet-stream + attachment + nosniff (tai ve, khong mo inline).
-        Khong log ten file."""
+        File khong ton tai / bytes lech sidecar -> 404 chung. Mac
+        dinh tra octet-stream + attachment + nosniff (tai ve, khong
+        mo inline). Khong log ten file.
+
+        (Xem truoc anh phuong an A, 21/11 — SPEC TT16) ``?xem=1``
+        + file co duoi anh da biet (.jpg/.jpeg/.png/.webp/.gif)
+        thi tra ``image/*`` + ``Content-Disposition: inline`` de
+        the ``<img>`` hien duoc anh; duoi khac khong bao gio tra
+        inline (rot ve tai ve nhu cu). Kiem tra quyen + 404 nhu
+        duong tai ve (chi chu nhan co phien UI moi toi duoc day)."""
         if request.method != "GET":
             return self._method_not_allowed(session)
         store = self._center_store()
@@ -2004,13 +2011,24 @@ class UiApp:
             return self._not_found(session)
         if len(data) != meta.get("file_size"):
             return self._not_found(session)
+        xem_values = request.query.get("xem") or []
+        inline_mime = None
+        if xem_values and xem_values[0] == "1":
+            inline_mime = ui_pages.image_content_type(
+                meta.get("file_name") or "")
+        if inline_mime is not None:
+            content_type = inline_mime
+            disposition = center_store.inline_disposition(
+                meta.get("file_name") or "file")
+        else:
+            content_type = "application/octet-stream"
+            disposition = center_store.attachment_disposition(
+                meta.get("file_name") or "file")
         return self._with_security(Response(
             200, data,
-            {"Content-Type": "application/octet-stream",
+            {"Content-Type": content_type,
              "Content-Length": str(len(data)),
-             "Content-Disposition":
-                 center_store.attachment_disposition(
-                     meta.get("file_name") or "file"),
+             "Content-Disposition": disposition,
              "Cache-Control": "no-store",
              "X-Content-Type-Options": "nosniff"}))
 

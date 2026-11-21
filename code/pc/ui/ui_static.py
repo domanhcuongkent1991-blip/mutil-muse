@@ -108,6 +108,16 @@ h3 { font-size: 21px; margin: 16px 0 6px; font-weight: 500; }
    thuoc tinh style display:none inline; JS an/hien bang CSSOM, xem
    refreshOne trong APP_JS). */
 .is-hidden { display: none; }
+/* (SUA B4 + L2, 21/11) Thuoc tinh hidden PHAI an phan tu: luat
+   tac gia `button { display: inline-block; }` (ben duoi) thang
+   luat `[hidden] { display: none }` cua UA stylesheet (author >
+   UA bat ke specificity), lai them `position: absolute` bien
+   display thanh block — vien "N tin moi" co hidden=true van
+   hien (do that tren PC: computed display:block), bam khong
+   bien mat (B4). Quy tac nay (chuan cua cac bo reset) khoi phuc
+   ngu nghia hidden cho MOI phan tu, ke ca nut va badge phong
+   (JS bat/tat bang el.hidden). */
+[hidden] { display: none !important; }
 /* Khoang cach 16px tren nut submit (P0 CSP — thay cho
    thuoc tinh style margin-top:16px inline o trang dang nhap + form bot). */
 .mt-16 { margin-top: 16px; }
@@ -334,11 +344,32 @@ textarea { min-height: 90px; font-family: inherit; }
 .msg--owner .msg-head strong { color: var(--accent); }
 .msg .msg-task { color: var(--gray); font-size: 15px; margin-bottom: 4px; }
 .msg .msg-body { white-space: pre-wrap; word-break: break-word; }
-/* Chip file đính kèm: nền trắng, viền 1px, bo 16px. KHÔNG preview. */
+/* Chip file đính kèm: nền trắng, viền 1px, bo 16px. */
 .center-file-chip {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 16px; padding: 8px 10px; margin-top: 6px; font-size: 15px;
   word-break: break-all;
+}
+/* Anh thu nho xem truoc (phuong an A, 21/11 — SPEC TT16): khung
+   co dinh 160x120, cat 4:3 o giua (object-fit: cover), bo 12px;
+   bam mo anh day du o tab moi. Chu "Dang tai anh…" nam SAU anh
+   (absolute, inset 0): dang tai thi anh trong suot nen thay chu;
+   anh ve thi che chu — khung khong doi co, khong nhay bo cuc.
+   Tai loi: JS (APP_JS) an ca khung, chi con chip. Dien thoai
+   <= 720px: 120x90. */
+.center-file-preview {
+  position: relative; display: block; width: 160px; height: 120px;
+  margin-top: 6px; border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden; background: var(--surface2);
+}
+.center-file-preview-loading {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: var(--muted); font-size: 13px;
+  text-align: center; padding: 0 8px;
+}
+.center-file-preview-img {
+  position: relative; z-index: 1; display: block; width: 100%;
+  height: 100%; object-fit: cover;
 }
 /* Ô nhập dính dưới khung chat (Q-C4): chỉ dính trong mục chat
    (section bọc riêng), không dính cả trang. */
@@ -347,12 +378,18 @@ textarea { min-height: 90px; font-family: inherit; }
   position: sticky; bottom: 0; background: var(--page);
   padding: 8px 0 12px; z-index: 1;
 }
-/* (DOT A #10, 21/11) Mobile <=699px: thanh tab co dinh chiem
-   78px day viewport (cao 68px + bottom: 10px) nen form sticky
-   bottom: 0 cu bi tab che kin nut "Gửi" (do o 390px: nut
-   [306,769,72,52], tab [10,766,370,68], tab z-index 10 >
-   form 1). Day form len 90px = 78px + khe 12px, nut nam tren
-   mep tren tab. Chi ap mobile vi desktop tab khong co dinh
+/* (DOT A #10, 21/11 — SUA L1 bo sung) Mobile <=699px: thanh tab
+   co dinh chiem 78px day viewport (cao 68px + bottom: 10px) nen
+   form sticky bottom: 0 cu bi tab che kin nut "Gửi" (do o 390px:
+   nut [306,769,72,52], tab [10,766,370,68], tab z-index 10 >
+   form 1). Day form len 90px = 78px + khe 12px. NHUNG sticky
+   bottom CHI co tac dung khi cuon trang du de dua day form len
+   duong dinh 754 — o vi tri doc tu nhien form van nam o flow
+   (day 970 > viewport 844) nen nut van de tab 12px (L1, do that
+   10:12 21/11). Vi vay L1 sua goc bang cach rut ngan form + hop
+   chat 40vh (xem khoi <=720px ben duoi) de vi tri flow cua nut
+   da sach tab; bottom: 90px giu lai lam luoi an toan khi cuon
+   xuong day. Chi ap mobile vi desktop tab khong co dinh
    (in-flow) — desktop giu bottom: 0. */
 @media (max-width: 699px) {
   .center-chat-form { bottom: 90px; }
@@ -452,19 +489,18 @@ textarea { min-height: 90px; font-family: inherit; }
   background: var(--typing); margin-left: 4px; flex: 0 0 auto;
 }
 /* Hop chat co dinh 65vh, toi thieu 400px (dien thoai <= 720px:
-   50vh/320px), 1 co, khong nut phong to/thu nho. */
+   40vh/320px — SUA L1 21/11, da duoc chu nhan chot), 1 co, khong
+   nut phong to/thu nho. */
 .center-chat-box-wrap { position: relative; }
-/* (SUA B2) Neo vien + nut vao TRONG hop chat cuon duoc: wrapper
-   cao 0, dinh vao day khung hien thi cua hop khi cuon (sticky,
-   bottom 0) — nam o cuoi hop chat; cach neo nay khong phu thuoc
-   bat ky to tien nao co position nen khong the troi khoi khung
-   chat khi cuon trang chinh (cach neo absolute vao wrap cu da troi
-   tren PC that). Wrapper khong chiem cho (height: 0) va khong chan
-   bam (pointer-events: none); 2 nut ben trong bat lai auto. */
-.center-chat-anchor {
-  position: sticky; bottom: 0; height: 0; pointer-events: none;
-  z-index: 2;
-}
+/* (SUA B3/B4 + L2, 21/11 — THAY anchor sticky cu) Vien "N tin
+   moi" + nut "Ve cuoi" la con TRUC TIEP cua wrap (position:
+   relative, KHONG cuon) nen neo absolute theo wrap: luon nam
+   co dinh trong khung hien thi cua hop, khong troi theo noi
+   dung khi cuon hop hay cuon trang chinh. Anchor sticky cu
+   (con cuoi cua hop cuon, height: 0) DA TROI that — video B3
+   vien xuong duoi day hop ~300px, do L2 o 390px vien y=869 +
+   nut y=917 nam ngoai viewport 844. Khong con
+   .center-chat-anchor; JS chen bong bóng bang appendChild. */
 .center-chat-box {
   height: 65vh; min-height: 400px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: 16px;
@@ -475,21 +511,24 @@ textarea { min-height: 90px; font-family: inherit; }
 .center-chat-lead { font-size: 16px; font-weight: 500; margin: 16px 0; }
 /* Vien "N tin moi" (v0.6.0, T3i): nen do ruou, chu trang, bo 16px,
    dem 8px 16px, chu 14px, weight 500; noi tren hop chat.
-   (v0.6.0, NS-K21-2 — D17) Cach day hop 68px theo frag-02 §2.4
-   (ban cu 12px, cung cao do voi nut "Ve cuoi" 12px + cao 44px nen
-   vien dai tren hop hep co the cham nut; 68 > 12 + 44 nen khong
-   cham). */
+   (v0.6.0, NS-K21-2 — D17; SUA B3 doi moc 21/11) Cach day hop
+   81px = 68px cu (frag-02 §2.4: vien khong cham nut "Ve cuoi")
+   + 13px (padding-bottom 12px + border 1px cua hop) vi moc
+   gio la wrap (day ngoai cua hop) thay cho anchor (day trong
+   cua noi dung hop) — giu dung vi tri hien thi cu khi hop
+   cuon xuong day. Khe vien-nut giu 12px: 81 - (25 + 44) = 12. */
 .center-new-pill {
-  position: absolute; left: 50%; bottom: 68px;
+  position: absolute; left: 50%; bottom: 81px;
   transform: translateX(-50%); z-index: 2; pointer-events: auto;
   background: var(--wine); color: #fff; border: none; border-radius: 16px;
   padding: 8px 16px; font-size: 14px; font-weight: 500;
   min-height: 36px; min-width: 0;
 }
 /* Nut "Ve cuoi" 44px x 44px (Q-V060-08): chi cuon, khong danh
-   dau da doc. */
+   dau da doc. (SUA B3, 21/11) bottom 25px = 12px cu + 13px
+   (padding-bottom + border cua hop), nhu vien. */
 .center-scroll-bottom {
-  position: absolute; right: 12px; bottom: 12px; z-index: 2;
+  position: absolute; right: 12px; bottom: 25px; z-index: 2;
   pointer-events: auto;
   width: 44px; height: 44px; min-width: 44px; min-height: 44px;
   padding: 0; border-radius: 50%; background: var(--surface);
@@ -505,7 +544,23 @@ textarea { min-height: 90px; font-family: inherit; }
 @media (max-width: 720px) {
   .center-chat-layout { flex-direction: column; }
   .center-chat-rooms { flex: none; width: 100%; }
-  .center-chat-box { height: 50vh; min-height: 320px; }
+  /* (SUA L1, 21/11) Hop 50vh -> 40vh: day toan bo form len
+     ~84px (o 844px) de nut "Gửi" sach thanh tab co dinh o vi
+     tri doc tu nhien (do that 390px truoc sua: nut de tab 12px,
+     day form tran viewport 126px). Hop van du cho vai bong bóng;
+     cuon trong hop khong doi. */
+  .center-chat-box { height: 40vh; min-height: 320px; }
+  /* (SUA L1, 21/11) Rut ngan form o mobile: o "Gửi cho:" chi
+     cao 48px (1 hang, cuon noi — chon nhieu van mo bang bo chon
+     goc cua trinh duyet, khong mat chuc nang); an 2 ghi chu phu
+     (F18 + doi phong mat file) chi o mobile, van hien day du o
+     desktop; giu lai ghi chu cach chon nhieu + canh bao mat khau.
+     Cung sticky bottom:90px (<=699px) giu form sach tab khi
+     cuon xuong day. */
+  #center-hoi-to[multiple] { height: 48px; min-height: 48px; }
+  .center-chat-form .hint--mobile-hide { display: none; }
+  /* (Xem truoc anh phuong an A, 21/11) Thu nho 120x90 o mobile. */
+  .center-file-preview { width: 120px; height: 90px; }
 }
 /* --- Cảnh báo (V2 §5) --- */
 .alert {
@@ -578,6 +633,32 @@ APP_JS = """
         dot.style.background = dot.getAttribute("data-color");
       });
   }
+
+  // (Xem truoc anh phuong an A, 21/11) Anh thu nho loi (404/file
+  // bi xoa): an ca khung preview, chi con chip file ben duoi.
+  // Khong dung onerror inline (CSP cam handler inline) — lang
+  // nghe tap trung o document (su kien error khong noi bot nen
+  // dung capture). Anh loi truoc khi script chay thi quet 1 lan
+  // o DOMContentLoaded (complete + naturalWidth 0).
+  function hideBrokenPreview(img) {
+    var wrap = img.closest ? img.closest(".center-file-preview") : null;
+    if (wrap) { wrap.hidden = true; }
+  }
+  document.addEventListener("error", function (event) {
+    var target = event.target;
+    if (target && target.classList &&
+        target.classList.contains("center-file-preview-img")) {
+      hideBrokenPreview(target);
+    }
+  }, true);
+  document.addEventListener("DOMContentLoaded", function () {
+    var imgs = document.querySelectorAll(".center-file-preview-img");
+    for (var i = 0; i < imgs.length; i++) {
+      if (imgs[i].complete && imgs[i].naturalWidth === 0) {
+        hideBrokenPreview(imgs[i]);
+      }
+    }
+  });
 
   function refreshOne(el, delayMs, failures) {
     var url = el.getAttribute("data-fragment-url");
@@ -771,10 +852,9 @@ APP_JS = """
     var loadingOlder = false;
     var pill = document.getElementById("center-new-pill");
     var toBottomBtn = document.getElementById("center-scroll-bottom");
-    // (SUA B2) Wrapper sticky chua vien + nut — LUON la con cuoi
-    // cua hop chat; bong bóng moi chen TRUOC no, khong append
-    // thang vao hop nua.
-    var chatAnchor = document.getElementById("center-chat-anchor");
+    // (SUA B3, 21/11) Vien + nut gio la con cua wrap (ngoai hop
+    // cuon) nen khong con wrapper anchor trong hop — bong bóng
+    // moi append thang vao hop.
     var typingLine = document.getElementById("center-typing-line");
 
     // (SUA B1 — phong thu them) Khi co bong bóng that duoc them
@@ -846,8 +926,18 @@ APP_JS = """
       }).then(function (data) {
         if (data && data.ok === true && typeof onOk === "function") {
           onOk();
+        } else if (typeof console !== "undefined") {
+          // (SUA B4, 21/11) Ghi ly do de lan kiem live sau doc
+          // duoc console neu vien van khong an (truoc day chi
+          // lang lang giu vien).
+          console.warn("[center] mark-read khong OK:", data);
         }
-      }).catch(function () { /* doi chu ky sau — vien o lai */ });
+      }).catch(function (err) {
+        // Doi chu ky sau — vien o lai; ghi log de chan doan.
+        if (typeof console !== "undefined") {
+          console.warn("[center] mark-read loi:", err);
+        }
+      });
     }
 
     function loadOlder() {
@@ -991,14 +1081,10 @@ APP_JS = """
             });
             // Tin moi chi xuat hien o cuoi hop: tin dang doc o dau
             // hop khong nhay (NT-2.6).
-            // (SUA B2) Chen bong bóng moi TRUOC wrapper sticky
-            // (chatAnchor) de wrapper LUON la con cuoi cua hop;
-            // chi khi khong co wrapper (trang cu) moi append thang.
-            if (chatAnchor) {
-              box.insertBefore(frag, chatAnchor);
-            } else {
-              box.appendChild(frag);
-            }
+            // (SUA B3, 21/11) Vien + nut da ra khoi hop (con cua
+            // wrap) nen append thang — khong con chen truoc
+            // wrapper anchor.
+            box.appendChild(frag);
             // (SUA B1) Co bong bóng that -> xoa o trong neu con.
             removeEmptyNotice();
             paintColorDots(box);
@@ -1061,12 +1147,9 @@ APP_JS = """
             fresh.forEach(function (node) {
               frag.appendChild(node);
             });
-            // (SUA B2) Chen TRUOC wrapper sticky nhu nhanh delta.
-            if (chatAnchor) {
-              box.insertBefore(frag, chatAnchor);
-            } else {
-              box.appendChild(frag);
-            }
+            // (SUA B3, 21/11) Append thang nhu nhanh delta
+            // (khong con wrapper anchor trong hop).
+            box.appendChild(frag);
             // (SUA B1) Co bong bóng that -> xoa o trong neu con.
             removeEmptyNotice();
             paintColorDots(box);

@@ -374,6 +374,18 @@ def find_secret_like(text):
     return None
 
 
+def _disposition_filename(file_name):
+    """Ten file an toan cho header Content-Disposition: ban ASCII
+    (khong dau ngoac/keo) + ban RFC 5987. Dung chung cho ca
+    attachment va inline (chi khac tu dau)."""
+    from urllib.parse import quote
+
+    safe = "".join(ch for ch in (file_name or "")
+                   if ch.isascii() and ch not in '"\\')
+    safe = safe.strip() or "file"
+    return safe, quote(file_name or "file", safe="")
+
+
 def attachment_disposition(file_name):
     """Gia tri header Content-Disposition an toan cho tai file ve.
 
@@ -381,13 +393,20 @@ def attachment_disposition(file_name):
     ``filename*`` RFC 5987 (ten da kiem tra CR/LF luc tai len, quote
     them de chac). Ten fallback ASCII cho trinh duyet cu.
     """
-    from urllib.parse import quote
-
-    safe = "".join(ch for ch in (file_name or "")
-                   if ch.isascii() and ch not in '"\\')
-    safe = safe.strip() or "file"
+    safe, quoted = _disposition_filename(file_name)
     return ('attachment; filename="%s"; filename*=UTF-8\'\'%s'
-            % (safe, quote(file_name or "file", safe="")))
+            % (safe, quoted))
+
+
+def inline_disposition(file_name):
+    """Gia tri header Content-Disposition de trinh duyet MO inline
+    (chi dung cho anh da biet — caller kiem tra duoi truoc bang
+    ``ui_pages.image_content_type``). Ten xu ly giong
+    ``attachment_disposition``, chi doi ``attachment`` thanh
+    ``inline`` (xem truoc anh phuong an A, 21/11 — SPEC TT16)."""
+    safe, quoted = _disposition_filename(file_name)
+    return ('inline; filename="%s"; filename*=UTF-8\'\'%s'
+            % (safe, quoted))
 
 
 class CenterError(Exception):

@@ -1568,22 +1568,78 @@ def center_fragment_html(tasks, accounts, health, filters,
     )
 
 
+# Anh xem truoc inline (phuong an A, 21/11 — SPEC TT16): chi 5
+# duoi anh nay duoc xem truoc, quyet bang DUOI TEN FILE (ban ghi
+# tin khong co MIME). Khong tin duoi la.
+IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def image_content_type(file_name):
+    """Content-Type ``image/*`` cua file anh da biet, ``None`` khi
+    khong phai anh. Khong phan biet chu hoa/thuong o duoi."""
+    name = (file_name or "").lower()
+    for ext, mime in IMAGE_CONTENT_TYPES.items():
+        if name.endswith(ext):
+            return mime
+    return None
+
+
+def is_image_file_name(file_name):
+    """True khi ten file co duoi anh da biet (xem truoc duoc)."""
+    return image_content_type(file_name) is not None
+
+
+def _center_file_preview_html(file_meta):
+    """Anh thu nho 160x120 (phuong an A) cho file anh trong bong
+    bóng. Tra "" khi khong phai anh. Anh boc trong link mo anh day
+    du o tab moi (``target=_blank``, ``rel=noopener``). Khung co
+    dinh 160x120 + chu "Dang tai anh…" phia sau (CSS): dang tai thi
+    giu dung co, khong nhay bo cuc; tai loi thi JS (APP_JS) an ca
+    khung, chi con chip. Ten file escape day du (XSS)."""
+    if not isinstance(file_meta, dict):
+        return ""
+    file_id = file_meta.get("file_id") or ""
+    name = file_meta.get("file_name") or ""
+    if image_content_type(name) is None:
+        return ""
+    url = "/center/files/%s?xem=1" % esc(file_id)
+    return (
+        '<a class="center-file-preview" href="%s" target="_blank" '
+        'rel="noopener" aria-label="Xem ảnh %s cỡ lớn">'
+        '<span class="center-file-preview-loading">Đang tải ảnh…'
+        "</span>"
+        '<img class="center-file-preview-img" src="%s" alt="%s" '
+        'loading="lazy" decoding="async"></a>'
+    ) % (url, esc(name), url, esc(name))
+
+
 def center_file_chip_html(file_meta):
     """Chip file dinh kem trong bong bóng chat (v0.2.5, Q-C7): ten
     file (cat 40 ky tu) + dung luong + link "Tải về" toi
-    ``/center/files/<file_id>``. KHONG <img>/preview — trinh duyet
-    tai ve (attachment). Ten file escape day du (XSS)."""
+    ``/center/files/<file_id>``. Ten file escape day du (XSS).
+
+    (Xem truoc anh phuong an A, 21/11 — SPEC TT16) File anh
+    (.jpg/.jpeg/.png/.webp/.gif, quyet bang duoi ten) thi THEM anh
+    thu nho 160x120 phia tren chip (bam mo anh day du o tab moi);
+    file khong phai anh giu nguyen chi chip nhu cu."""
     if not isinstance(file_meta, dict):
         return ""
     file_id = file_meta.get("file_id") or ""
     name = file_meta.get("file_name") or ""
     if len(name) > 40:
         name = name[:37] + "…"
-    return (
+    chip = (
         '<div class="center-file-chip">Tệp đính kèm: '
         '<a href="/center/files/%s">%s</a> · %s</div>'
     ) % (esc(file_id), esc(name),
          esc(human_file_size(file_meta.get("file_size"))))
+    return _center_file_preview_html(file_meta) + chip
 
 
 _MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])@([a-z0-9][a-z0-9-]*)")
@@ -1816,8 +1872,8 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
     """Tab Chat rieng, mo hinh A (v0.6.0, T3i — DOI Q-T3-05): cot
     trai danh sach phong (300px) + cot phai khung chat; khoang cach
     2 cot 16px; dien thoai <= 720px xep doc (CSS). Hop chat co dinh
-    65vh/tối thiểu 400px (dien thoai 50vh/320px), 1 co, khong nut
-    phong to/thu nho. Vien "N tin moi" + nut "Ve cuoi" nam tren hop
+    65vh/tối thiểu 400px (dien thoai 40vh/320px — SUA L1 21/11, da
+    duoc chu nhan chot), 1 co, khong nut phong to/thu nho. Vien "N tin moi" + nut "Ve cuoi" nam tren hop
     chat (JS dieu khien); o nhap + form tao viec KHONG o day (form
     tao viec o tab Trung tam). Phong luu tru: chi xem, khong o
     nhap. ``typing_names``: ten tai khoan dang tra loi trong phong
@@ -1886,19 +1942,19 @@ def center_chat_tab_html(rooms, current_room, room_label, messages,
         'data-oldest-seq="%s" data-newest-seq="%s" '
         'data-has-more="%s" data-archived="%s">'
         "%s%s"
-        # (SUA B2) Vien "N tin moi" + nut "Ve cuoi" la con CUOI cua
-        # hop chat cuon duoc, boc trong wrapper sticky cao 0
-        # (position: sticky; bottom: 0) — neo vao trong khung chat,
-        # khong phu thuoc to tien co position nen khong the troi
-        # khoi khung khi cuon trang chinh. JS giu wrapper LUON la
-        # con cuoi: bong bóng moi chen TRUOC wrapper.
-        '<div class="center-chat-anchor" id="center-chat-anchor">'
+        "</div>"
+        # (SUA B3/B4 + L2, 21/11 — THAY anchor sticky cu) Vien
+        # "N tin moi" + nut "Ve cuoi" la con TRUC TIEP cua wrap
+        # (position: relative, khong cuon) — neo absolute theo
+        # wrap nen luon nam trong khung hien thi cua hop. Anchor
+        # sticky cu (con cuoi cua hop cuon) DA TROI that (video
+        # B3 + do L2) nen bo han; JS chen bong bóng bang
+        # appendChild (khong can chen truoc wrapper nua).
         '<button type="button" class="center-new-pill" '
         'id="center-new-pill" hidden></button>'
         '<button type="button" class="center-scroll-bottom" '
         'id="center-scroll-bottom" title="Về cuối" '
         'aria-label="Về cuối">↓</button>'
-        "</div></div>"
         "</div>"
         "%s"
         "</div>"
@@ -1972,12 +2028,12 @@ def center_chat_form_html(csrf_token, room="chung", draft="",
         '<input type="file" id="center-hoi-file" name="file">'
         '<button class="primary-action" type="submit">Gửi</button>'
         "</div>"
-        '<div class="hint">Chỉ gửi tin hỏi (hoi). Không gửi giao việc '
-        "hay báo cáo thay tài khoản (F18).</div>"
+        '<div class="hint hint--mobile-hide">Chỉ gửi tin hỏi (hoi). '
+        "Không gửi giao việc hay báo cáo thay tài khoản (F18).</div>"
         '<div class="hint">Đừng tải lên file chứa mật khẩu/mã bí mật. '
         "Tối đa 50 MB/file.</div>"
-        '<div class="hint">Đổi phòng sẽ mất file đã chọn, chỉ giữ lại '
-        "chữ đã gõ.</div>"
+        '<div class="hint hint--mobile-hide">Đổi phòng sẽ mất file đã '
+        'chọn, chỉ giữ lại chữ đã gõ.</div>'
         "</form>"
     ) % (esc(csrf_token), esc(room), esc(client_key), esc(draft),
          "".join(options))
