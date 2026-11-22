@@ -2199,7 +2199,14 @@ class UiApp:
             if isinstance(item, str) and item and item not in seen:
                 seen.add(item)
                 assignees.append(item)
-        if not assignees or len(assignees) > 5:
+        expanded_all = False
+        if not assignees:
+            # Khong tick ai = giao cho TAT CA tai khoan duoc giao
+            # (spec #227 — giong form Hoi: rong = tat ca, khong gioi
+            # han 5 nhu chon tay).
+            assignees = [a for a, _ in self._center_assignable()]
+            expanded_all = True
+        elif len(assignees) > 5:
             return None, ("Chọn 1–5 tài khoản nhận việc.")
         assignable = {a for a, _ in self._center_assignable()}
         bad = [a for a in assignees if a not in assignable]
@@ -2219,7 +2226,7 @@ class UiApp:
         try:
             task, _dup = self._center_store().create_task(
                 "owner", title, body, kind, assignees, due_at,
-                secrets.token_hex(16))
+                secrets.token_hex(16), allow_over_cap=expanded_all)
         except center_store.CenterError as exc:
             return None, "Không tạo được việc: %s" % exc.error
         self._audit(request.client_ip, "center_task_create", None, None,
@@ -2350,7 +2357,14 @@ class UiApp:
             if isinstance(item, str) and item and item not in seen:
                 seen.add(item)
                 assignees.append(item)
-        if not assignees or len(assignees) > 5:
+        expanded_all = False
+        if not assignees:
+            # Khong tick ai = giao cho TAT CA tai khoan duoc giao
+            # (spec #227 — giong form Hoi: rong = tat ca, khong gioi
+            # han 5 nhu chon tay).
+            assignees = [a for a, _ in self._center_assignable()]
+            expanded_all = True
+        elif len(assignees) > 5:
             return self._center_error_page(
                 session, task_id, "Chọn 1–5 tài khoản nhận việc.")
         if any(a not in assignable for a in assignees):
@@ -2368,7 +2382,8 @@ class UiApp:
                 "việc.")
         before = list(current)
         try:
-            store.reassign_task(task_id, assignees, by="owner")
+            store.reassign_task(task_id, assignees, by="owner",
+                                allow_over_cap=expanded_all)
         except center_store.CenterError as exc:
             return self._center_error_page(
                 session, task_id,

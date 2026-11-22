@@ -1322,6 +1322,32 @@ class TestUiJoint(T3eUiFixture):
         self.assertEqual(resp.status, 200, resp.body[:300])
         self.assertIn("1–5", resp.body.decode("utf-8"))
 
+    def test_create_task_no_assignee_means_all_via_ui(self):
+        # Spec #227 (sua lech goi gop 22/11): khong tick ai = giao
+        # cho TAT CA tai khoan duoc giao (khong gioi han 5).
+        resp = self.post_form_list("/center/tasks", [
+            ("title", "Việc cho tất cả"), ("body", "b."),
+            ("kind", "khac"), ("due_at", "2026-11-25T10:00")])
+        self.assertEqual(resp.status, 302, resp.body[:300])
+        task_id = resp.headers["Location"].rsplit("/", 1)[-1]
+        task = self.center.get_task(task_id)
+        self.assertEqual(task["assigned_to"], [
+            "muse-ba", "muse-bon", "muse-chinh",
+            "muse-nam", "muse-phu", "muse-sau"])
+
+    def test_reassign_no_assignee_means_all_via_ui(self):
+        # Spec #227 (sua lech goi gop 22/11): khong tick ai = giao
+        # cho TAT CA tai khoan duoc giao (khong gioi han 5).
+        task = self._make_tag_task()
+        task_id = task["task_id"]
+        resp = self.post_form_list(
+            "/center/tasks/%s/reassign" % task_id, [])
+        self.assertEqual(resp.status, 302, resp.body[:300])
+        self.assertEqual(
+            self.center.get_task(task_id)["assigned_to"], [
+                "muse-ba", "muse-bon", "muse-chinh",
+                "muse-nam", "muse-phu", "muse-sau"])
+
     def test_task_row_shows_report_chip_and_no_due(self):
         task = self._make_tag_task()
         task_id = task["task_id"]

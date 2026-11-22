@@ -1233,7 +1233,7 @@ class CenterStore:
 
     # -- tao viec --------------------------------------------------------
     def create_task(self, caller, title, body, kind, assigned_to, due_at,
-                    client_key):
+                    client_key, allow_over_cap=False):
         """Tao viec + tu sinh tin giao-viec trong cung 1 lan giu khoa.
 
         Tra ve (task, duplicate). ``caller`` la assigned_from.
@@ -1242,9 +1242,13 @@ class CenterStore:
         kiem tra tai khoan (ton tai / tham gia / co secret) do lop goi
         thuc hien truoc (can accounts.json + secret tren PC) — store
         chi nhan ``assigned_to`` da duoc kiem tra.
+        ``allow_over_cap=True`` (spec #227, sua lech goi gop 22/11):
+        mien tran 5 cho danh sach da mo rong tu "khong tick ai =
+        tat ca" — giong Q-FIX-02 cho marker "@tất cả".
         """
         self._validate_task_fields(title, body, kind, due_at, client_key)
-        assignees = _normalize_assignees(assigned_to)
+        assignees = _normalize_assignees(
+            assigned_to, allow_over_cap=allow_over_cap)
         if caller in assignees:
             # Cam tu giao (R3, SUY LUAN).
             raise CenterError(400, "self_assign_forbidden")
@@ -1779,13 +1783,19 @@ class CenterStore:
             return task, False
 
     # -- chuyen tay (R5 — dung o T3, store san sang tu T1) ---------------
-    def reassign_task(self, task_id, new_assigned_to, by):
+    def reassign_task(self, task_id, new_assigned_to, by,
+                      allow_over_cap=False):
         """Chuyen tay o moi trang thai chua xong: thay TOAN BO danh
         sach nguoi lam viec (v0.4.0: form chon nhieu, 1..5 nguoi),
         reset ve ``moi``, ``seen_at`` ve ``null``, ``reported_by`` /
         ``refused_by`` ve rong, xoa muc seen cua viec do.
-        ``new_assigned_to`` nhan chuoi (v1) hoac danh sach (v2)."""
-        new_assignees = _normalize_assignees(new_assigned_to)
+        ``new_assigned_to`` nhan chuoi (v1) hoac danh sach (v2).
+        ``allow_over_cap=True`` (spec #227, sua lech goi gop 22/11):
+        mien tran 5 cho danh sach da mo rong tu "khong tick ai =
+        tat ca" — giong Q-FIX-02 cho marker "@tất cả".
+        """
+        new_assignees = _normalize_assignees(
+            new_assigned_to, allow_over_cap=allow_over_cap)
         with self._locked():
             events = self._read_events_locked()
             tasks = self._read_tasks_locked()
