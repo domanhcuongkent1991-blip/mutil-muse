@@ -1208,6 +1208,8 @@ class UiApp:
                 center_stuck=self._center_stuck_items(now),
                 center_discussion_stopped=(
                     self._center_stopped_discussion_items()),
+                center_cap_auth=self._center_cap_auth_items(),
+                center_slow=self._center_slow_items(now),
                 center_view_overdue=[
                     item for item in
                     ui_store.center_view_pending_items(self.root, now)
@@ -1225,15 +1227,22 @@ class UiApp:
         direction = {"in": "in", "out": "out"}.get(params["dir"])
         # Node Hoạt động đóng -> bỏ qua activity_feed (DESIGN §8.1);
         # dải số vẫn cần cho tóm tắt (count_stats là lệnh đếm nhẹ).
+        # (Fix gop 21/11, A5) Tab nen tang chi dem tin cua nen tang
+        # do: truyen platforms vao ca activity_feed lan count_stats
+        # (tin trung tam chi cong khi platforms la None hoac chua
+        # "center"); tab Tat ca/Trung tam giu platforms=None.
+        tab_platforms = {tab} if tab in ("zalo", "telegram") else None
         if prefs.get("activity"):
             feed = []
         else:
             feed = ui_store.activity_feed(
                 self.root, feed_ids, now=now, limit=ui_store.ACTIVITY_LIMIT,
+                platforms=tab_platforms,
                 direction=direction,
                 attention_only=params["dir"] == "attention",
                 query=params["q"] or None)
-        stats = ui_store.count_stats(self.root, bot_ids, now=now)
+        stats = ui_store.count_stats(
+            self.root, bot_ids, now=now, platforms=tab_platforms)
         node_summaries = self._dashboard_node_summaries(
             prefs, stats, tab_summaries, feed)
         # L7: 1 banner chung "đồng bộ trả lời chậm" trên node
@@ -1505,6 +1514,36 @@ class UiApp:
             "count": item["count"],
             "level": ui_store.CENTER_DISCUSSION_STOPPED_LEVEL,
         } for item in stopped]
+
+    def _center_cap_auth_items(self):
+        """Canh bao cap ket + loi ma trung tam o tab Canh bao (fix
+        gop 21/11, S1c-A — muc 20): doc tu
+        ``ui_store.center_cap_auth_alerts`` (file thieu/rong/hong
+        -> [], khong crash)."""
+        try:
+            return ui_store.center_cap_auth_alerts(self.root)
+        except OSError:
+            return []
+
+    def _center_slow_items(self, now):
+        """Assignee cham bao >5 phut o tab Canh bao (fix gop 21/11,
+        S2-e — UT-10): tinh lai tu viec tren hub (chi hien thi,
+        khong DM, khong ghi file — DM/dedup do dispatcher phia
+        Muse lam). Ten hien thi lay tu accounts.json."""
+        try:
+            items = ui_store.center_slow_assignees(self.root, now)
+        except OSError:
+            return []
+        names = self._center_account_names()
+        return [{
+            "task_id": item["task_id"],
+            "title": item["title"],
+            "names": ", ".join(
+                names.get(account_id, account_id)
+                for account_id in item["slow"]),
+            "wait_seconds": item["wait_seconds"],
+            "level": item["level"],
+        } for item in items]
 
     def _center_live_typing(self, now=None):
         """{room: [account_id...]} dang tra loi (typing con han 90
@@ -2461,6 +2500,27 @@ class UiApp:
                 session, None,
                 "Phòng lưu trữ — chỉ xem lại tin cũ, không gửi thêm "
                 "được.", status=403, back=back)
+        # (Fix gop 21/11, S2-b) Ten tag khong co that: neu chua xac
+        # nhan thi tra 400 JSON ma rieng ``unknown_mentions`` (nhanh
+        # tra JSON rieng, KHONG dung trang loi HTML
+        # ``_center_error_page``) de UI hien confirm; gui lai kem
+        # co ``confirmed=1`` (form/query) thi cho qua. Kiem TRUOC
+        # khi luu file + TRUOC khi goi store ghi tin (ham ghi tin
+        # + sinh viec ngay).
+        confirmed = request.form_value("confirmed") == "1"
+        if not confirmed:
+            query_confirmed = request.query.get("confirmed") or []
+            confirmed = bool(query_confirmed) \
+                and query_confirmed[0] == "1"
+        if not confirmed:
+            unknown = center_store.find_unknown_mentions(
+                body, center_store.read_accounts(self.root))
+            if unknown:
+                return self._with_security(Response.json(400, {
+                    "error": "unknown_mentions",
+                    "unknown": unknown,
+                    "confirm_required": True,
+                }))
         upload = request.form_file("file")
         file_data = None
         file_name = None
@@ -3141,6 +3201,10 @@ class UiApp:
                         "Xác nhận đã hết hạn",
                         "<h1>Xác nhận đã hết hạn</h1>"
                         "<p>Quay lại tab Trung tâm và bấm lại.</p>"
+                        "<p>Mã bí mật mới vừa cấp vẫn còn hiệu lực — "
+                        "trang kết quả chỉ hiện mã một lần nên tải "
+                        "lại trang sẽ không thấy mã nữa. Nếu chưa "
+                        "kịp chép mã, xoay mã mới rồi xem mã mới.</p>"
                         '<p><a href="/?tab=center">Tab Trung tâm</a></p>',
                         csrf_token=session["csrf_token"])))
             # Tài khoản không tồn tại / đã gỡ hẳn -> 404 chung, không

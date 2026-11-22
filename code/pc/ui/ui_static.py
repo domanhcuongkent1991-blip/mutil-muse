@@ -1371,6 +1371,53 @@ APP_JS = """
         label.textContent = name || "Đính kèm file";
       });
     }
+    // Form chat trung tam (fix gop 21/11, S2-b): gui bang fetch de
+    // bat 400 unknown_mentions — ten tag khong co that thi hoi xac
+    // nhan ("... không có thật, gửi tiếp?") roi gui lai kem
+    // confirmed=1; khong co ten la thi gui nhu thuong. Loi 400
+    // khac (vd qua 5 tag) thi gui lai bang form thuong de hien
+    // trang loi HTML nhu cu. Neu JS tat thi form POST nhu cu
+    // (server tra JSON 400 — van doc duoc ten la).
+    var centerForm = document.querySelector(".center-chat-form");
+    if (centerForm) {
+      centerForm.addEventListener("submit", function (event) {
+        if (centerForm.dataset.confirmed === "1") { return; }
+        event.preventDefault();
+        var data = new FormData(centerForm);
+        fetch(centerForm.action, {method: "POST", body: data,
+          credentials: "same-origin"})
+          .then(function (resp) {
+            if (resp.status === 400) {
+              resp.clone().json().then(function (payload) {
+                if (payload && payload.error === "unknown_mentions") {
+                  var names = (payload.unknown || []).join(", ");
+                  var ok = window.confirm(
+                    "Tên tag không có thật: " + names +
+                    ". Gửi tiếp?");
+                  if (!ok) { return; }
+                  var flag = centerForm.querySelector(
+                    'input[name="confirmed"]');
+                  if (flag) { flag.value = "1"; }
+                  centerForm.dataset.confirmed = "1";
+                  centerForm.submit();
+                  return;
+                }
+                centerForm.dataset.confirmed = "1";
+                centerForm.submit();
+              }).catch(function () {
+                centerForm.dataset.confirmed = "1";
+                centerForm.submit();
+              });
+              return;
+            }
+            window.location.href = resp.url;
+          })
+          .catch(function () {
+            centerForm.dataset.confirmed = "1";
+            centerForm.submit();
+          });
+      });
+    }
     // Chuyen phong chat trung tam (v0.3.0, T3c — CHANG-5): truoc khi
     // submit form doi phong thi chep noi dung textarea hien tai vao
     // truong an "draft" cua form do + danh dau "draft_copied" = "1"

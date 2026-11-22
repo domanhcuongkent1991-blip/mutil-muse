@@ -162,6 +162,25 @@ ROOM_RE = re.compile(r"^(chung|dm:[a-z0-9][a-z0-9-]{0,31})$")
 # o regex de khong khop dut 1 phan cua token dai (chi toan bo
 # token duoc kiem tra voi danh sach tai khoan).
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])@([a-z0-9][a-z0-9-]*)")
+# Marker dac biet cho "@tất cả"/"@all" (fix gop 21/11, Q-FIX-02):
+# ``parse_mentions`` tra marker nay NHU 1 phan tu cua danh sach
+# mentions (chua "@" + khoang trang nen khong trung mau
+# ACCOUNT_ID_RE); ``_filter_tag_assignees`` mo rong thanh danh
+# sach tai khoan center_participating=true. Marker KHONG tinh vao
+# tran 5 (tran dem tren danh sach mentions hop le, khong dem
+# marker) — "@tất cả" + 5 mention khac van khong 400; tai khoan
+# thu 6 tro di mo rong du, khong cat bot, khong 400.
+MENTION_ALL_MARKER = "@tất cả"
+# Regex quet hop nhat (fix gop 21/11, S2-a/S2-c — thay MENTION_RE
+# trong parse_mentions): khop tren ban sao body da lowercase + gon
+# khoang trang, cho phep khoang trang sau @ ("@ muse-1992-a"),
+# khong phan biet hoa/thuong ("@MUSE-CHINH"). Nhanh "@tất cả"
+# phai thu TRUOC nhanh ten thuong — neu khong "@tất" chi khop
+# "t" roi roi vao danh sach token bi bo. Cac dang viet chap nhan:
+# "tất cả", "tat-ca", "tất-cả", "all" (ke ca "@  tất cả").
+MENTION_SCAN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])@\s*(tất cả|tat-ca|tất-cả|all)(?![a-z0-9-])"
+    r"|(?<![A-Za-z0-9_])@\s*([a-z0-9][a-z0-9-]*)")
 
 
 def _as_assignee_list(value):
@@ -213,11 +232,13 @@ def _tag_task_suppressed_by_law2(from_account, to_account):
     return bool(targets)
 
 
-def _normalize_assignees(assigned_to):
+def _normalize_assignees(assigned_to, allow_over_cap=False):
     """Kiem tra + chuan hoa danh sach nguoi nhan luc tao/chuyen tay:
     chuoi -> [chuoi]; danh sach -> bo trung (giu thu tu); 1..5 nguoi
     (MAX_MENTIONS); moi muc khop mau account_id. Sai -> CenterError
-    400."""
+    400. ``allow_over_cap=True`` (fix gop 21/11, Q-FIX-02): mien
+    tran 5 cho danh sach da mo rong tu marker "@tất cả" — tai khoan
+    thu 6 tro di van duoc giao, khong cat bot, khong 400."""
     if isinstance(assigned_to, str):
         assigned_to = [assigned_to]
     if not isinstance(assigned_to, list) or not assigned_to:
@@ -231,7 +252,7 @@ def _normalize_assignees(assigned_to):
             continue
         seen.add(item)
         out.append(item)
-    if len(out) > MAX_MENTIONS:
+    if len(out) > MAX_MENTIONS and not allow_over_cap:
         raise CenterError(400, "too_many_assignees")
     return out
 
@@ -264,23 +285,68 @@ def parse_mentions(body, known_accounts):
     dau tien (trung lap lay 1 lan), hoac None neu khong tag ai.
     Mention khong ton tai (khong trong ``known_accounts`` va khac
     "owner") thi BO khoi danh sach, giu nguyen chu "@..." trong
-    body lam chu thuong, tin van ghi (Q-V030-1). Qua MAX_MENTIONS
+    body lam chu thuong, tin van ghi (Q-V030-1).
+
+    (Fix gop 21/11, S2-a/S2-c, Q-FIX-02) Chuan hoa truoc khi khop:
+    lowercase + gon khoang trang, cho phep khoang trang sau @
+    ("@ muse-1992-a", "@MUSE-CHINH" deu nhan). "@tất cả"/"@all"
+    (cac dang "tất cả", "tat-ca", "tất-cả", "all", ke ca "@  tất
+    cả") tra marker dac biet ``MENTION_ALL_MARKER`` — KHONG mo
+    rong o day (ham khong nhan co tham gia, khong doi chu ky);
+    viec mo rong lam o ``_filter_tag_assignees``. Tran
+    MAX_MENTIONS dem tren danh sach mentions hop le, KHONG dem
+    marker — "@tất cả" + 5 mention khac van khong 400. Qua tran
     (tinh tren danh sach hop le, sau khi bo trung) -> CenterError
     400 "too_many_mentions", khong ghi gi (nguoi gui tach thanh
     nhieu tin roi gui lai — khong tu bo tag thua lang le).
     """
     found = []
     seen = set()
-    for match in MENTION_RE.finditer(body or ""):
-        name = match.group(1)
+    names = 0
+    text = re.sub(r"\s+", " ", (body or "").lower())
+    for match in MENTION_SCAN_RE.finditer(text):
+        if match.group(1) is not None:
+            if MENTION_ALL_MARKER in seen:
+                continue
+            seen.add(MENTION_ALL_MARKER)
+            found.append(MENTION_ALL_MARKER)
+            continue
+        name = match.group(2)
         if name in seen:
             continue
         seen.add(name)
         if name == "owner" or name in known_accounts:
             found.append(name)
-    if len(found) > MAX_MENTIONS:
+            names += 1
+    if names > MAX_MENTIONS:
         raise CenterError(400, "too_many_mentions")
     return found or None
+
+
+def find_unknown_mentions(body, known_accounts):
+    """Danh sach "@token" bi bo vi ten khong co that (fix gop
+    21/11, S2-b — de UI canh bao + hoi xac nhan truoc khi gui).
+
+    Quet bang cung regex + cung chuan hoa nhu ``parse_mentions``;
+    tra token (dang chu thuong) theo thu tu xuat hien dau tien, bo
+    trung. Chi gom token khong phai "owner", khong trong
+    ``known_accounts`` va khong phai marker "@tất cả". THU TU BAT
+    BUOC: nhanh "@tất cả" + chuan hoa chay TRUOC khi tinh danh
+    sach nay — neu khong "@tất cả" se bi bao thanh token "t"
+    ("t khong co that"). Tra [] neu khong co token nao bi bo."""
+    unknown = []
+    seen = set()
+    text = re.sub(r"\s+", " ", (body or "").lower())
+    for match in MENTION_SCAN_RE.finditer(text):
+        if match.group(1) is not None:
+            continue
+        name = match.group(2)
+        if name in seen:
+            continue
+        seen.add(name)
+        if name != "owner" and name not in known_accounts:
+            unknown.append(name)
+    return unknown
 
 
 def parse_room(value):
@@ -1256,9 +1322,25 @@ class CenterStore:
         go/tam ngung (center_participating=false) giu trong mentions
         nhung KHONG lam viec; (d) tag chinh minh chi nhac (giu cam tu
         giao R3); (e) tag trung gop thanh 1; (f) con lai -> nguoi lam
-        viec. Tra ve danh sach (co the rong)."""
+        viec. Marker "@tất cả" (fix gop 21/11, Q-FIX-02) mo rong
+        thanh MOI tai khoan center_participating=true (theo thu tu
+        accounts.json), tru nguoi gui (luat (d)); KHONG cat bot o
+        tran 5, khong 400 — mien tran o ca parse_mentions lan
+        _normalize_assignees. Tra ve danh sach (co the rong)."""
         out = []
         for name in mentions or []:
+            if name == MENTION_ALL_MARKER:
+                if isinstance(accounts, dict):
+                    for acc_id, record in accounts.items():
+                        if acc_id == from_account:
+                            continue
+                        if not isinstance(record, dict):
+                            continue
+                        if not record.get("center_participating"):
+                            continue
+                        if acc_id not in out:
+                            out.append(acc_id)
+                continue
             if name == "owner":
                 continue
             if name == from_account:
@@ -1335,16 +1417,28 @@ class CenterStore:
         return task, seq
 
     def create_task_from_tag(self, from_account, body, source_msg_id,
-                             assignees):
+                             assignees, to_account=None,
+                             allow_over_cap=False):
         """Tao viec tu 1 tin tag (duong cong khai cho test/rebuild
         goi truc tiep). Dedupe theo ``source_msg_id``: da co viec
-        thi tra viec do + True, khong tao viec thu 2."""
+        thi tra viec do + True, khong tao viec thu 2.
+
+        (A9, fix gop 21/11) Luat 2: tin da ghi ro ``to_account``
+        (chuoi hoac danh sach khong rong) thi tag chi nhac ten,
+        KHONG sinh viec — ap ca tin chu nhan (D14). Kiem TRUOC khi
+        chuan hoa assignees: tin bi chan thi tra (None, False),
+        khong tao viec, khong 400 oan. ``allow_over_cap`` mien tran
+        5 cho danh sach da mo rong tu marker "@tất cả" (Q-FIX-02).
+        """
+        if _tag_task_suppressed_by_law2(from_account, to_account):
+            return None, False
         if not isinstance(body, str) or not body.strip():
             raise CenterError(400, "bad_body")
         if not isinstance(source_msg_id, str) \
                 or not MSG_ID_RE.match(source_msg_id):
             raise CenterError(400, "bad_msg_id")
-        assignees = _normalize_assignees(assignees)
+        assignees = _normalize_assignees(
+            assignees, allow_over_cap=allow_over_cap)
         if from_account in assignees:
             raise CenterError(400, "self_assign_forbidden")
         with self._locked():
@@ -2297,7 +2391,10 @@ class CenterStore:
                 del drafts[room]
                 self._write_drafts(drafts)
 
-    # -- moc da doc + huy hieu chua doc (P7 — read_state.json, NS-08) --
+    # -- moc da doc + huy hieu chua doc (P7 — read_state.json;
+    # luat da doc MOI v0.6.0/T3i thay NS-08 cu: chi bam vien
+    # "N tin moi" moi danh dau, phuc vu fragment KHONG tu danh
+    # dau — xem mark_room_read + ui_app.py:1778) --
     def _read_state(self):
         data = _read_json(self.read_state_path)
         state = {}

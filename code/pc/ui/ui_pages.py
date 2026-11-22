@@ -831,7 +831,8 @@ def alerts_fragment_html(open_alerts_list, events, names, platforms,
                          csrf_token, filters, prefs=None, next_url=None,
                          node_summaries=None, center_stuck=None,
                          center_view_overdue=None,
-                         center_discussion_stopped=None):
+                         center_discussion_stopped=None,
+                         center_cap_auth=None, center_slow=None):
     """Fragment tab Cảnh báo (V2 §5): đang mở (kèm nút xác nhận) hoặc
     lịch sử 30 ngày; lọc theo bot + nền tảng.
 
@@ -851,7 +852,19 @@ def alerts_fragment_html(open_alerts_list, events, names, platforms,
     khoan da xem ma qua 24 gio chua xoay {account_id, display_name,
     viewed_at, overdue_seconds} — hien 1 dong moi tai khoan o muc
     trung tam rieng, muc "nghiêm trọng", kem link xoay ma (chi o
-    view "Đang mở", khong nut xac nhan, khong vao huy hieu tab)."""
+    view "Đang mở", khong nut xac nhan, khong vao huy hieu tab).
+
+    (Fix gop 21/11, S1c-A — muc 20) ``center_cap_auth``: list canh
+    bao cap ket/loi ma {kind, account_id, at, level, text} — hien
+    1 dong moi alert o muc trung tam rieng (chi o view "Đang mở",
+    khong nut xac nhan, khong vao huy hieu tab; file thieu/rong
+    thi khong co muc nay).
+
+    (Fix gop 21/11, S2-e — UT-10) ``center_slow``: list viec co
+    assignee cham bao >5 phut {task_id, title, names, wait_seconds,
+    level} — hien 1 dong moi viec o muc trung tam rieng (chi o view
+    "Đang mở", khong nut xac nhan, khong vao huy hieu tab; chi
+    hien thi, khong tu chot viec)."""
     view = filters.get("view", "open")
     bots = sorted(names.items(), key=lambda pair: pair[1].lower())
     bot_options = ['<option value="">Tất cả bot</option>']
@@ -998,6 +1011,39 @@ def alerts_fragment_html(open_alerts_list, events, names, platforms,
         center_body += (
             "<h2>Trung tâm — vòng thảo luận đã dừng</h2>%s"
             % stopped_rows)
+    if center_cap_auth:
+        cap_rows = ""
+        for item in center_cap_auth:
+            when = item.get("at")
+            when_text = (format_day_time_saigon(when)
+                         if isinstance(when, int) else "không rõ lúc")
+            cap_rows += (
+                '<div class="alert">%s (%s, mức %s).</div>'
+                % (esc(item.get("text") or ""),
+                   esc(when_text),
+                   esc(item.get("level") or "cần xem")))
+        center_body += (
+            "<h2>Trung tâm — cảnh báo cap/lỗi mã</h2>%s" % cap_rows)
+    if center_slow:
+        slow_rows = ""
+        for item in center_slow:
+            wait = item.get("wait_seconds")
+            if isinstance(wait, int):
+                wait_text = ("%d phút" % (wait // 60) if wait >= 60
+                             else "%d giây" % wait)
+            else:
+                wait_text = "không rõ bao lâu"
+            slow_rows += (
+                '<div class="alert">Việc '
+                '<a href="/center/tasks/%s">%s</a> — %s chưa báo '
+                "sau %s (mức %s).</div>"
+                % (esc(item.get("task_id") or ""),
+                   esc(item.get("title") or item.get("task_id") or ""),
+                   esc(item.get("names") or ""),
+                   esc(wait_text),
+                   esc(item.get("level") or "cần xem")))
+        center_body += (
+            "<h2>Trung tâm — tài khoản chậm báo</h2>%s" % slow_rows)
     return "%s<h2>Cảnh báo</h2>%s%s%s" % (
         all_actions, bar, center_body, body)
 
@@ -1204,7 +1250,9 @@ def center_task_row_html(task, account_names, now, orphan=False,
     danh sách + chip "x/y đã báo xong"; việc chưa có hạn hiện "chưa
     có hạn"; việc chỉ 1 phần người làm việc bị ngưng
     (``suspended_count`` > 0) hiện nhắc "N người đã ngưng — xem chi
-    tiết"."""
+    tiết". (Fix gop 21/11, S2-e — muc 19) Viec dang mo hien them
+    ten tung nguoi CHUA bao xong ("Chưa báo: ...") — xem ai chua
+    tra loi ngay o danh sach, khong can mo tung trang chi tiet."""
     title = preview_text(task.get("title") or "", 40)
     status = task.get("status") or ""
     kind = task.get("kind") or ""
@@ -1227,6 +1275,14 @@ def center_task_row_html(task, account_names, now, orphan=False,
             ' <span class="chip gray">%d/%d đã báo xong</span>'
             % (len([a for a in reported if a in assigned]),
                len(assigned)))
+    unreported_note = ""
+    if status not in CENTER_TERMINAL_STATUSES:
+        reported = task.get("reported_by") or []
+        unreported = [a for a in assigned if a not in reported]
+        if unreported:
+            unreported_note = (
+                " · Chưa báo: %s" % ", ".join(
+                    account_names.get(a, a) for a in unreported))
     suspended_note = ""
     if suspended_count:
         suspended_note = (
@@ -1237,7 +1293,7 @@ def center_task_row_html(task, account_names, now, orphan=False,
         '<span class="chip %s">%s</span>'
         '<span class="chip gray">%s</span>%s%s%s%s'
         ' <a href="/center/tasks/%s"><strong>%s</strong></a>'
-        '<div class="meta">Giao cho %s · Hạn %s</div>'
+        '<div class="meta">Giao cho %s · Hạn %s%s</div>'
         "</div>"
     ) % (
         "green" if status == "da-xac-nhan" else
@@ -1252,6 +1308,7 @@ def center_task_row_html(task, account_names, now, orphan=False,
         esc(title),
         esc(assigned_names),
         esc(due_text),
+        esc(unreported_note),
     )
 
 
@@ -2179,6 +2236,7 @@ def center_chat_form_html(csrf_token, room="chung", draft="",
         '<input type="hidden" name="csrf_token" value="%s">'
         '<input type="hidden" name="room" value="%s">'
         '<input type="hidden" name="client_key" value="%s">'
+        '<input type="hidden" name="confirmed" value="">'
         '<label for="center-hoi-body">Tin nhắn</label>'
         '<textarea id="center-hoi-body" name="body" '
         'placeholder="Hỏi tài khoản đang làm việc...">%s</textarea>'
@@ -2451,9 +2509,10 @@ def center_task_detail_html(task, messages, account_names, csrf_token,
         "<h2>Lịch sử đổi trạng thái</h2>%s"
         "<h2>Chat gắn việc này</h2>"
         # (v0.6.0, T3i — Q-V060-09) Trang chi tiet viec la trang doc
-        # lai TINH: lich su chat dat trong cung hop cuon nhu khung
-        # chat chinh (65vh/400px) nhung KHONG polling, KHONG vien "N
-        # tin moi", KHONG nut "Ve cuoi" (hop khong co
+        # lai TINH: lich su chat dat trong hop cuon TINH rieng
+        # (65vh/400px — chi hop nay; khung chat chinh o tab Chat
+        # cao calc(100vh - 266px)) nhung KHONG polling, KHONG vien
+        # "N tin moi", KHONG nut "Ve cuoi" (hop khong co
         # data-center-chat-box nen JS bo qua).
         '<div class="center-chat-box center-chat-box--static">%s</div>'
     ) % (

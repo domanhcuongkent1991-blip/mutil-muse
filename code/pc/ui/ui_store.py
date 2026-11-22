@@ -1664,10 +1664,13 @@ def center_secret_status(root, account_id):
     """Mã bí mật trung tâm: {"has": bool, "issued_at": epoch|None}.
 
     "has" = đủ cặp fetch+push (file tồn tại, dòng đầu không rỗng).
-    "issued_at" = mtime file fetch_secret (DESIGN §9). Ngày cấp suy từ
-    mtime chỉ là ƯỚC LƯỢNG — nguồn chính xác là dòng xoay mã trong
-    audit.jsonl; UI ghi chú điều này, không tin mtime khi lệch audit.
-    Chỉ đọc metadata (tồn tại + mtime) — KHÔNG đọc giá trị secret.
+    "issued_at" (fix gop 21/11, A10 NS-J1): nguon chinh la dong
+    ``center_secret_rotate`` MOI NHAT cua tai khoan trong
+    ``ui-config/audit.jsonl`` (truong "ts" — ghi o
+    ``ui_store.py:1900-1908`` + ``ui_app.py:2649``); chi khi audit
+    khong co dong nao (nang cap/file audit mat — audit la
+    best-effort) moi roi ve mtime file fetch_secret nhu cu. Chi
+    doc metadata (ton tai + mtime) — KHONG doc gia tri secret.
     """
     secrets_dir = Path(root) / "secrets"
     has = True
@@ -1681,13 +1684,40 @@ def center_secret_status(root, account_id):
         if not first or not first[0].strip():
             has = False
             break
-    issued_at = None
-    try:
-        issued_at = (secrets_dir / ("center-%s.fetch_secret" % account_id)
-                     ).stat().st_mtime
-    except OSError:
-        issued_at = None
+    issued_at = _center_secret_issued_at_from_audit(root, account_id)
+    if issued_at is None:
+        try:
+            issued_at = (secrets_dir / ("center-%s.fetch_secret"
+                                        % account_id)
+                         ).stat().st_mtime
+        except OSError:
+            issued_at = None
     return {"has": has, "issued_at": issued_at}
+
+
+def _center_secret_issued_at_from_audit(root, account_id):
+    """Epoch cap/xoay ma gan nhat theo audit.jsonl (A10 NS-J1):
+    "ts" cua dong ``center_secret_rotate`` moi nhat co
+    ``account_id`` khop; khong co dong nao -> None (lop goi roi ve
+    mtime fetch_secret). Audit la best-effort — doc loi thi None,
+    khong crash."""
+    latest = None
+    try:
+        rows = read_jsonl_rows(Path(root) / "ui-config" / "audit.jsonl")
+    except OSError:
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("action") != "center_secret_rotate":
+            continue
+        if row.get("account_id") != account_id:
+            continue
+        ts = row.get("ts")
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+            if latest is None or ts > latest:
+                latest = ts
+    return latest
 
 
 # ---------------------------------------------------------------------------
@@ -2759,7 +2789,7 @@ def quota_estimate(root, bot_id, platform, now=None, warn_fraction=None):
         warn_fraction=warn_fraction)
 
 
-def count_stats(root, bot_ids, now=None):
+def count_stats(root, bot_ids, now=None, platforms=None):
     """Dải số tổng quan (V2 §1): tin đến hôm nay / 7 ngày, trả lời đã
     gửi (tổng số trong file trả lời còn giữ), tin đang tồn (tổng tồn
     ước lượng), thư chết. Gọi với bot_ids đã lọc theo nền tảng để có
@@ -2767,7 +2797,13 @@ def count_stats(root, bot_ids, now=None):
 
     (#11 dot A) "Tin đến hôm nay / 7 ngày" tinh CA tin den qua
     trung tam (``_center_incoming``) CHUNG vao cung so, khong tach
-    rieng — khop voi nhung gi tab Chat hien tu events.jsonl."""
+    rieng — khop voi nhung gi tab Chat hien tu events.jsonl.
+
+    (Fix gop 21/11, A5) ``platforms``: tap nen tang cua tab dang
+    render (vd {"zalo"}); tin trung tam chi cong khi platforms la
+    None (tab Tat ca/Trung tam) hoac chua "center" — feed tab nen
+    tang chi dem tin cua nen tang do, khong cong tin trung tam vao
+    (cung luat nhu ``activity_feed``)."""
     if now is None:
         now = now_epoch()
     fetch_state = read_fetch_state(root)
@@ -2788,11 +2824,12 @@ def count_stats(root, bot_ids, now=None):
         totals["backlog"] += max(0, latest_seq - fetched)
     today_start = _local_day_start(now)
     week_start = _local_day_start(now, 6)
-    for item in _center_incoming(root):
-        if item["ts"] >= today_start:
-            totals["today_in"] += 1
-        if item["ts"] >= week_start:
-            totals["week_in"] += 1
+    if platforms is None or CENTER_BOT_ID in platforms:
+        for item in _center_incoming(root):
+            if item["ts"] >= today_start:
+                totals["today_in"] += 1
+            if item["ts"] >= week_start:
+                totals["week_in"] += 1
     return totals
 
 
@@ -3420,6 +3457,162 @@ def center_chat_stuck_alerts(root, now=None):
             if item is not None:
                 out.append(item)
     out.sort(key=lambda item: item["oldest_seq"])
+    return out
+
+
+# --- Cảnh báo cap kẹt + lỗi mã trung tâm (fix gop 21/11, S1c-A) -----
+# Phia Muse (dispatcher/fetcher) ghi 2 file alert
+# ``data/center/cap_alerts.jsonl`` + ``data/center/auth_alerts.jsonl``
+# (cung dinh dang dedup nhu chat_stuck_alerts.jsonl); tab Canh bao
+# doc them 2 file nay. PHAI chiu duoc file thieu/rong/hong — khong
+# crash (khi Muse chua ap hoac chua co alert nao). Dinh dang dong
+# do phia Muse ghi: doc phong thu — lay "text"/"message" neu co,
+# khong thi ghep cau chung tu kind + account_id; moc thoi gian lay
+# tu "at"/"created_at"/"ts" (ISO hoac epoch). Chi tra metadata,
+# KHONG mang noi dung tin. Dedup theo (kind, account_id), giu dong
+# moi nhat moi khoa.
+CENTER_SLOW_ASSIGNEE_SECONDS = 300  # assignee >5 phut chua bao (S2-e)
+CENTER_SLOW_ASSIGNEE_LEVEL = "cần xem"
+
+
+def _center_alert_file_path(root, filename):
+    return Path(root) / "data" / "center" / filename
+
+
+def _center_alert_time(row):
+    for key in ("at", "created_at", "ts"):
+        value = row.get(key)
+        if isinstance(value, (int, float)) \
+                and not isinstance(value, bool):
+            return int(value)
+        if isinstance(value, str) and value.strip():
+            parsed = parse_iso_to_epoch(value)
+            if parsed is not None:
+                return int(parsed)
+    return None
+
+
+def center_cap_auth_alerts(root):
+    """Canh bao cap ket + loi ma trung tam cho tab Canh bao (fix
+    gop 21/11, S1c-A — muc 20). Tra list {kind ("cap"|"auth"),
+    account_id, at (epoch|None), level, text} — moi nhat truoc.
+    File thieu/rong/hong -> [] (khong crash)."""
+    out = []
+    seen = set()
+    for filename, kind, fallback in (
+            ("cap_alerts.jsonl", "cap",
+             "Cap worker kẹt: tài khoản %s chưa được đánh thức"),
+            ("auth_alerts.jsonl", "auth",
+             "Lỗi mã trung tâm: tài khoản %s")):
+        try:
+            rows = read_jsonl_rows(
+                _center_alert_file_path(root, filename))
+        except OSError:
+            rows = []
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            account_id = row.get("account_id")
+            if not isinstance(account_id, str) or not account_id:
+                account_id = None
+            key = (kind, account_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            text = row.get("text") or row.get("message") \
+                or row.get("detail")
+            if not isinstance(text, str) or not text.strip():
+                text = (fallback % account_id) if account_id \
+                    else fallback.split(":")[0]
+            level = row.get("level")
+            if not isinstance(level, str) or not level:
+                level = CENTER_CHAT_STUCK_LEVEL
+            items.append({
+                "kind": kind,
+                "account_id": account_id,
+                "at": _center_alert_time(row),
+                "level": level,
+                "text": text.strip(),
+            })
+        items.sort(key=lambda item: item["at"] or 0, reverse=True)
+        out.extend(items)
+    out.sort(key=lambda item: item["at"] or 0, reverse=True)
+    return out
+
+
+def center_slow_assignees(root, now=None):
+    """Assignee cham bao tren viec chung (fix gop 21/11, S2-e —
+    UT-10): 1 item moi viec dang mo co nguoi chua bao qua 5 phut:
+    {task_id, title, slow ([account_id]), wait_seconds, level}.
+
+    Moc thoi gian: created_at cua viec; neu viec tung bi tra lai
+    (da-bao-xong -> dang-lam) thi tinh tu lan tra lai gan nhat
+    (history). Bo nguoi da bao (reported_by), da tu choi
+    (refused_by), da ngung tham gia. Chi hien thi — KHONG tu chot
+    viec (luat P2 khong doi). VieC thieu created_at hop le thi bo
+    qua (khong doan)."""
+    if now is None:
+        now = time.time()
+    try:
+        data = read_json_file(
+            Path(root) / "data" / "center" / "tasks_state.json")
+    except OSError:
+        return []
+    tasks = data.get("tasks") if isinstance(data, dict) else None
+    if not isinstance(tasks, dict):
+        return []
+    accounts = read_accounts(root).get("accounts") or {}
+    out = []
+    for task_id, task in tasks.items():
+        if not isinstance(task, dict):
+            continue
+        if task.get("status") not in ("moi", "da-nhan", "dang-lam"):
+            continue
+        assigned = task.get("assigned_to")
+        if isinstance(assigned, str):
+            assigned = [assigned] if assigned else []
+        if not isinstance(assigned, list) or not assigned:
+            continue
+        base = parse_iso_to_epoch(task.get("created_at"))
+        for entry in task.get("history") or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("from_status") == "da-bao-xong" \
+                    and entry.get("to_status") == "dang-lam":
+                returned_at = parse_iso_to_epoch(entry.get("at"))
+                if returned_at is not None and (
+                        base is None or returned_at > base):
+                    base = returned_at
+        if base is None:
+            continue
+        wait = int(now - base)
+        if wait <= CENTER_SLOW_ASSIGNEE_SECONDS:
+            continue
+        reported = task.get("reported_by") or []
+        refused = task.get("refused_by") or []
+        slow = []
+        for account_id in assigned:
+            if not isinstance(account_id, str) or not account_id:
+                continue
+            if account_id in reported or account_id in refused:
+                continue
+            record = accounts.get(account_id)
+            if isinstance(record, dict) \
+                    and not record.get("center_participating", True):
+                continue
+            if account_id not in slow:
+                slow.append(account_id)
+        if not slow:
+            continue
+        out.append({
+            "task_id": task_id,
+            "title": task.get("title") or task_id,
+            "slow": slow,
+            "wait_seconds": wait,
+            "level": CENTER_SLOW_ASSIGNEE_LEVEL,
+        })
+    out.sort(key=lambda item: item["wait_seconds"], reverse=True)
     return out
 
 
