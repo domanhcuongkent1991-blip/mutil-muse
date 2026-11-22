@@ -302,6 +302,16 @@ textarea { min-height: 90px; font-family: inherit; }
   min-height: 44px; font-weight: 700; margin: 0;
 }
 .filters input[type="checkbox"] { width: 22px; height: 22px; }
+/* Nhom checkbox chon nhieu tai khoan (gop UI checkbox, 22/11):
+   thay <select multiple> (bat giu Ctrl/Cmd, khong dung duoc tren
+   dien thoai). Moi o la 1 label boc checkbox, dich cham >=44px. */
+.field-label { display: block; font-weight: 700; margin: 12px 0 4px; }
+.check-group { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; }
+.check-group .check-item {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 44px; font-weight: 400; margin: 0; cursor: pointer;
+}
+.check-group input[type="checkbox"] { width: 22px; height: 22px; flex: none; }
 .chipbtn {
   display: inline-flex; align-items: center; min-height: 48px;
   padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px;
@@ -465,9 +475,8 @@ textarea { min-height: 90px; font-family: inherit; }
   border-radius: 12px; padding: 8px 10px; margin: 8px 0;
   font-size: 15px;
 }
-/* O "Gửi cho:" chon nhieu (select multiple): hien ~5 hang, vua
-   man 360px (khong tran ngang; chieu cao tu theo size=5). */
-#center-hoi-to[multiple] { min-height: 96px; }
+/* (Gop UI checkbox, 22/11) O "Gửi cho:" nay la nhom checkbox
+   (.check-group), khong con la <select multiple> nua. */
 /* --- Tab Chat rieng, mo hinh A (v0.6.0, T3i — DOI Q-T3-05) --- */
 /* Bo cuc 2 cot: trai danh sach phong 300px + phai khung chat,
    khoang cach 2 cot 16px; dien thoai <= 720px xep doc. */
@@ -579,7 +588,6 @@ textarea { min-height: 90px; font-family: inherit; }
      desktop; giu lai ghi chu cach chon nhieu + canh bao mat khau.
      Cung sticky bottom:90px (<=699px) giu form sach tab khi
      cuon xuong day. */
-  #center-hoi-to[multiple] { height: 48px; min-height: 48px; }
   .center-chat-form .hint--mobile-hide { display: none; }
   /* (Xem truoc anh phuong an A, 21/11) Thu nho 120x90 o mobile. */
   .center-file-preview { width: 120px; height: 90px; }
@@ -815,7 +823,11 @@ APP_JS = """
         } catch (e) { /* o nhap khong ho tro chon text: bo qua */ }
       }
       if (formFields[i].type === "checkbox" && formFields[i].name) {
-        savedChecked[formFields[i].name] = formFields[i].checked;
+        // (Gop UI checkbox, 22/11) Khoa theo name + value: nhieu
+        // checkbox cung name (nhom chon tai khoan) thi moi o co khoa
+        // rieng; checkbox khong co value thi value mac dinh "on".
+        savedChecked[formFields[i].name + "=" + formFields[i].value] =
+          formFields[i].checked;
       }
     }
     var activeEl = document.activeElement;
@@ -863,9 +875,11 @@ APP_JS = """
         // document.getElementById toan cuc).
         var savedBoxes = el.querySelectorAll('input[type="checkbox"]');
         for (var k = 0; k < savedBoxes.length; k++) {
-          if (savedBoxes[k].name
-              && savedBoxes[k].name in savedChecked) {
-            savedBoxes[k].checked = savedChecked[savedBoxes[k].name];
+          if (savedBoxes[k].name) {
+            var boxKey = savedBoxes[k].name + "=" + savedBoxes[k].value;
+            if (boxKey in savedChecked) {
+              savedBoxes[k].checked = savedChecked[boxKey];
+            }
           }
         }
         // (NS-01) Khoi phuc vi tri con tro sau khi da gan lai value
@@ -958,6 +972,10 @@ APP_JS = """
     var newestSeq = parseInt(box.getAttribute("data-newest-seq") || "", 10);
     if (isNaN(oldestSeq)) { oldestSeq = null; }
     if (isNaN(newestSeq)) { newestSeq = null; }
+    // (Sua badge chua doc 22/11 — Q-UR-FIX-02) Seq da danh dau gan
+    // nhat: tranh goi markRead lap lai tren moi su kien scroll khi
+    // nguoi dung keo xuong sat day.
+    var lastMarkedSeq = null;
     var hasMore = box.getAttribute("data-has-more") === "true";
     var loadingOlder = false;
     var pill = document.getElementById("center-new-pill");
@@ -1014,9 +1032,12 @@ APP_JS = """
     }
 
     function markRead(seq, onOk) {
-      // Chi bam vien "N tin moi" (hoac ngoai le sat day Q-V060-07
-      // ben duoi) moi goi ham nay — mo khung/polling khong tu danh
-      // dau (luat moi v0.6.0). Phong luu tru khong danh dau.
+      // Danh dau da doc khi: bam vien "N tin moi", tin moi ve trong
+      // luc dang o sat day (ngoai le Q-V060-07), HOAC keo xuong sat
+      // day (Q-UR-FIX-01, 22/11 — noi luat Q4/D17 v0.6.0 "chi bam
+      // vien moi danh dau": keo doc het ma badge khong tat thi sai
+      // thoi quen app nhan tin). Mo khung/polling khong tu danh dau.
+      // Phong luu tru khong danh dau.
       // (v0.6.0, NS-K21-3 — D17) Chi goi onOk (an vien) khi may chu
       // tra OK (HTTP 200 + {"ok": true}); goi that bai thi vien o
       // lai de bam lai — polling refreshUnread (<=5 giay sau) van
@@ -1215,6 +1236,7 @@ APP_JS = """
               // toi da 1 lan danh dau). Chu nhan soat lai sang mai;
               // neu doi y thi xoa khoi nay (chi giu tu cuon, khong
               // tu danh dau).
+              lastMarkedSeq = newestSeq;
               markRead(newestSeq);
             }
           })
@@ -1277,6 +1299,7 @@ APP_JS = """
             applySenderFilter();
             if (wasNear) {
               box.scrollTop = box.scrollHeight;
+              lastMarkedSeq = newestSeq;
               markRead(newestSeq);
             }
           })
@@ -1323,16 +1346,29 @@ APP_JS = """
       });
     }
     if (toBottomBtn) {
-      // Nut "Ve cuoi" (Q-V060-08): chi cuon, khong danh dau.
+      // Nut "Ve cuoi" (Q-V060-08): cuon xuong day; su kien scroll
+      // se danh dau da doc theo Q-UR-FIX-01 (22/11).
       toBottomBtn.addEventListener("click", function () {
         box.scrollTop = box.scrollHeight;
       });
     }
     box.addEventListener("scroll", function () {
       if (box.scrollTop <= CHAT_LOAD_TOP_PX) { loadOlder(); }
+      // (Sua badge chua doc 22/11 — Q-UR-FIX-01) Keo xuong sat day
+      // (<=150px, cung nguong nearBottom) = da doc het tin: danh
+      // dau da doc toi newestSeq. Chi goi 1 lan moi seq moi
+      // (lastMarkedSeq, Q-UR-FIX-02); may chu cung luy tien nen goi
+      // thua cung an toan. Phong luu tru khong danh dau.
+      if (!archived && newestSeq !== null
+          && newestSeq !== lastMarkedSeq && nearBottom()) {
+        lastMarkedSeq = newestSeq;
+        markRead(newestSeq, function () {
+          if (pill) { pill.hidden = true; }
+        });
+      }
     });
     // Mo tab lan dau: xuong tin moi nhat (khong danh dau da doc —
-    // chi bam vien moi danh dau).
+    // chi bam vien hoac keo xuong sat day moi danh dau).
     box.scrollTop = box.scrollHeight;
     updateOldestLine();
     window.setTimeout(pollTick, CHAT_POLL_MS);

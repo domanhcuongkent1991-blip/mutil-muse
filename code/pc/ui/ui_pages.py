@@ -2212,23 +2212,24 @@ def center_chat_form_html(csrf_token, room="chung", draft="",
     chon 1 nguoi). Gioi han D8-v3 (chi Tat ca hoac dung 1 tai khoan,
     chuoi v3) da bi T3l thay the.
     (v0.6.0, T3l — D8 + schema v4, C-18) O chon "Gửi cho:" nay cho
-    chon NHIEU tai khoan cung luc: ``<select multiple>`` — giu phim
-    Ctrl (Windows/Linux) hoac Cmd (Mac) roi bam them tung tai khoan
-    de chon them; khong chon gi (hoac chi chon "Gửi cho tất cả tài
-    khoản") = gui cho tat ca. May chu doc moi gia tri da chon, truyen
-    ``to_account`` thanh DANH SACH (toi da 5 nguoi); "owner"/khong
-    ton tai -> 400."""
+    chon NHIEU tai khoan cung luc: (gop UI checkbox, 22/11) nhom
+    checkbox, bam tung o de chon/bỏ chon (dung duoc tren dien thoai,
+    khong can giu Ctrl/Cmd); khong tick o nao = gui cho tat ca. May
+    chu doc moi gia tri da chon, truyen ``to_account`` thanh DANH
+    SACH (toi da 5 nguoi); "owner"/khong ton tai -> 400."""
     if archived:
         return (
             '<div class="notice">Phòng lưu trữ — chỉ xem lại tin cũ, '
             "không gửi thêm được.</div>")
-    # (L5, 21/11 — quyet chu nhan) Nhan mac dinh cua o chon la
-    # "Gửi cho tất cả tài khoản" (khong con "Tất cả" dung mot minh
-    # de tranh lap nhan voi tab "Tất cả").
-    options = ['<option value="">Gửi cho tất cả tài khoản</option>']
+    # (Gop UI checkbox, 22/11) Nhom checkbox thay cho <select multiple>
+    # (bat giu Ctrl/Cmd, khong dung duoc tren dien thoai). Khong co
+    # o "Tat ca" rieng: khong tick o nao = gui cho tat ca (may chu
+    # doc form_values("to_account") rong -> None, nhu cu).
+    checks = ""
     for account_id, name in (recipients or []):
-        options.append('<option value="%s">%s</option>'
-                       % (esc(account_id), esc(name)))
+        checks += ('<label class="check-item">'
+                   '<input type="checkbox" name="to_account" value="%s">'
+                   ' %s</label>' % (esc(account_id), esc(name)))
     return (
         "<h2>Hỏi qua trung tâm</h2>"
         '<form class="center-chat-form" method="post" '
@@ -2240,12 +2241,10 @@ def center_chat_form_html(csrf_token, room="chung", draft="",
         '<label for="center-hoi-body">Tin nhắn</label>'
         '<textarea id="center-hoi-body" name="body" '
         'placeholder="Hỏi tài khoản đang làm việc...">%s</textarea>'
-        '<label for="center-hoi-to">Gửi cho:</label>'
-        '<select id="center-hoi-to" name="to_account" multiple '
-        'size="5">%s</select>'
-        '<div class="hint">Chọn nhiều tài khoản: giữ Ctrl (Windows) '
-        "hoặc Cmd (Mac) rồi bấm thêm từng tài khoản. Không chọn gì = "
-        "gửi cho tất cả.</div>"
+        '<span class="field-label">Gửi cho:</span>'
+        '<div class="check-group">%s</div>'
+        '<div class="hint">Bấm chọn từng tài khoản muốn gửi; '
+        "không chọn gì = gửi cho tất cả.</div>"
         '<div class="chat-form-row">'
         '<label class="file-label" for="center-hoi-file">'
         "Đính kèm file</label>"
@@ -2260,7 +2259,7 @@ def center_chat_form_html(csrf_token, room="chung", draft="",
         'chọn, chỉ giữ lại chữ đã gõ.</div>'
         "</form>"
     ) % (esc(csrf_token), esc(room), esc(client_key), esc(draft),
-         "".join(options))
+         checks)
 
 
 def center_create_form_html(assignable, csrf_token, error=None, values=None):
@@ -2285,10 +2284,12 @@ def center_create_form_html(assignable, csrf_token, error=None, values=None):
         selected_assignees = [selected_assignees]
     account_options = ""
     for account_id, name in assignable:
-        selected = " selected" if account_id in selected_assignees \
+        checked = " checked" if account_id in selected_assignees \
             else ""
-        account_options += '<option value="%s"%s>%s</option>' % (
-            esc(account_id), selected, esc(name))
+        account_options += ('<label class="check-item">'
+                            '<input type="checkbox" name="assigned_to" '
+                            'value="%s"%s> %s</label>'
+                            % (esc(account_id), checked, esc(name)))
     return (
         "<h2>Tạo việc mới</h2>%s"
         '<form method="post" action="/center/tasks">'
@@ -2300,10 +2301,9 @@ def center_create_form_html(assignable, csrf_token, error=None, values=None):
         '<textarea id="center-body" name="body" required>%s</textarea>'
         '<label for="center-kind">Loại việc</label>'
         '<select id="center-kind" name="kind">%s</select>'
-        '<label for="center-assigned">Giao cho (chọn 1–5 tài khoản, '
-        "giữ Ctrl/Cmd để chọn thêm)</label>"
-        '<select id="center-assigned" name="assigned_to" multiple '
-        'size="5">%s</select>'
+        '<span class="field-label">Giao cho (chọn 1–5 tài khoản, '
+        "bấm để chọn/bỏ chọn)</span>"
+        '<div class="check-group">%s</div>'
         '<label for="center-due">Hạn xong (bắt buộc)</label>'
         '<input type="datetime-local" id="center-due" name="due_at" '
         'required value="%s">'
@@ -2458,18 +2458,20 @@ def center_task_detail_html(task, messages, account_names, csrf_token,
                 % (task_id, esc(csrf_token)))
         account_options = ""
         for account_id, name in assignable:
-            selected = " selected" if account_id in assigned else ""
-            account_options += '<option value="%s"%s>%s</option>' % (
-                esc(account_id), selected, esc(name))
+            checked = " checked" if account_id in assigned else ""
+            account_options += ('<label class="check-item">'
+                                '<input type="checkbox" '
+                                'name="assigned_to" value="%s"%s> '
+                                '%s</label>'
+                                % (esc(account_id), checked, esc(name)))
         if account_options:
             forms.append(
                 '<form method="post" action="/center/tasks/%s/reassign">'
                 '<input type="hidden" name="csrf_token" value="%s">'
-                '<label for="center-reassign">Chuyển cho tài khoản '
-                "khác (chọn 1–5, giữ Ctrl/Cmd để chọn thêm — thay toàn "
-                "bộ danh sách)</label>"
-                '<select id="center-reassign" name="assigned_to" '
-                'multiple size="5">%s</select>'
+                '<span class="field-label">Chuyển cho tài khoản '
+                "khác (chọn 1–5, bấm để chọn/bỏ chọn — thay toàn "
+                "bộ danh sách)</span>"
+                '<div class="check-group">%s</div>'
                 '<div class="actions"><button type="submit">'
                 "Chuyển tay</button></div></form>"
                 % (task_id, esc(csrf_token), account_options))
