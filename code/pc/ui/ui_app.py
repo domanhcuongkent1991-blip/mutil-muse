@@ -3720,6 +3720,25 @@ class UiApp:
                                     ui_store.shared_link_domain(
                                         link["url"])),
                     "ok")
+        # (Sua Link chung 22/11 — Q-LC-FIX-01/02/03) Link chi luu
+        # trong ui-config/shared_links.json thi tai khoan Muse khong
+        # bao gio doc duoc (chung khong dang nhap UI, khong co duong
+        # dong bo file nay sang phia Muse — xem
+        # THIET-KE-LINK-CHUNG-21-11.md §6). Gui them 1 tin vao phong
+        # chung de link nam trong center_messages.jsonl cho tai khoan
+        # doc nhu tin hoi thuong. Luon gui vao phong "chung" (khong
+        # gui vao phong dang mo — chu nhan co the dang mo phong rieng).
+        # Loi gui tin khong lam hong viec them link (Q-LC-FIX-04).
+        _link_title = link["title"] or "Link"
+        try:
+            self._center_store().append_message(
+                "owner", "hoi", None, None,
+                "Link chung mới: %s\n%s" % (_link_title, link["url"]),
+                "m-" + secrets.token_hex(6), room="chung")
+        except center_store.CenterError as exc:
+            self._audit(request.client_ip, "shared_link_notify_fail",
+                        "center", "", "khong gui duoc tin link: %s" % exc,
+                        "warn")
         return self._with_security(Response.redirect(
             "/?tab=chat&room=%s#link-chung" % quote(room)))
 

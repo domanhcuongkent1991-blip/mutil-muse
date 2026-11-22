@@ -853,7 +853,14 @@ def make_handler(ctx):
             elif account_id == task.get("assigned_from"):
                 role = "assigned_from"
             else:
-                self._send_json(403, {"error": "forbidden"})
+                # (C-7, 22/11 — theo mau C3 cua FIXL) Them ma rieng
+                # "not_assignee" de phia Muse phan biet 403 nay voi
+                # cac 403 khac va bo dong (tai khoan khong con la
+                # assignee/assigner thi khong bao gio doi duoc trang
+                # thai nua). Khong doi error "forbidden" de tuong
+                # thich nguoc.
+                self._send_json(403, {"error": "forbidden",
+                                      "code": "not_assignee"})
                 self._center_log(account_id, "tasks", 403)
                 return
             try:
