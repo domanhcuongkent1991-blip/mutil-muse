@@ -489,11 +489,14 @@ def inline_disposition(file_name):
 class CenterError(Exception):
     """Loi nghiep vu trung tam, mang theo ma HTTP + ma loi JSON."""
 
-    def __init__(self, http_status, error, detail=None):
+    def __init__(self, http_status, error, detail=None, code=None):
         super().__init__(error)
         self.http_status = http_status
         self.error = error
         self.detail = detail
+        # (FIXL C3) Ma loi rieng, vd "transition_forbidden" — chi
+        # nhanh change_status sai vai tro gan; khong tai dung detail.
+        self.code = code
 
 
 def now_iso():
@@ -1636,7 +1639,11 @@ class CenterStore:
                     rule = candidate
                     break
             if rule is None:
-                raise CenterError(403, "forbidden")
+                # (FIXL C3) Sai vai tro o change_status: giu 403 +
+                # error "forbidden", them ma rieng de phia Muse
+                # phan biet voi cac 403 khac.
+                raise CenterError(403, "forbidden",
+                                  code="transition_forbidden")
             if rule["note_required"] and not (
                     isinstance(note, str) and note.strip()):
                 raise CenterError(400, "note_required")

@@ -690,8 +690,15 @@ def make_handler(ctx):
                                  % type(exc).__name__)
 
         def _center_error(self, account_id, endpoint, exc):
-            """Anh xa CenterError cua store sang HTTP."""
-            self._send_json(exc.http_status, {"error": exc.error})
+            """Anh xa CenterError cua store sang HTTP.
+
+            (FIXL C3) Gui {"error": exc.error} va them "code" CHI
+            KHI exc.code co mat — cac 403 khac giu nguyen body.
+            """
+            body = {"error": exc.error}
+            if getattr(exc, "code", None) is not None:
+                body["code"] = exc.code
+            self._send_json(exc.http_status, body)
             self._center_log(account_id, endpoint, exc.http_status)
 
         def _center_upload(self, account_id, store):
