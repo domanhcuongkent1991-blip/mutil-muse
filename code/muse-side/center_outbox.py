@@ -933,14 +933,15 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
             stats["dropped"] = 1
             stats["error"] = reason
             return stats
-        if status == 403 and row.get("kind") == "status" \
+        if status == 403 and row.get("kind") in ("status", "bao-cao") \
                 and isinstance(body, dict) \
                 and body.get("code") == "not_assignee":
-            # (C-7, Q-C7-03) Dong STATUS cua tai khoan khong con la
-            # assignee/assigner: hub tra 403 code "not_assignee"
-            # (them o receiver theo mau C3). Bo dong nhu A2; khong
-            # dem loi ma. Hub cu (chua co ma) tra 403 "forbidden"
-            # khong ma -> fail-open o nhanh duoi (giu dong nhu cu).
+            # (C-7, Q-C7-03) Dong STATUS hoac bao-cao cua tai khoan
+            # khong con la assignee/assigner: hub tra 403 code
+            # "not_assignee" (them o receiver theo mau C3). Bo dong
+            # nhu A2; khong dem loi ma. Hub cu (chua co ma) tra 403
+            # "forbidden" khong ma -> fail-open o nhanh duoi (giu
+            # dong nhu cu).
             write_dead_letter(root, account_id, line_no, row, 403,
                               "not_assignee",
                               hub_error=body.get("error"),

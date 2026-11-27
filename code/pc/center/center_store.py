@@ -1654,7 +1654,8 @@ class CenterStore:
             assignees = _as_assignee_list(task.get("assigned_to"))
             if caller_role == "assigned_to" \
                     and caller not in assignees:
-                raise CenterError(403, "forbidden")
+                raise CenterError(403, "forbidden",
+                                  code="not_assignee")
             now = now_iso()
             reported_by = list(task.get("reported_by") or [])
             refused_by = list(task.get("refused_by") or [])

@@ -1053,8 +1053,10 @@ def make_handler(ctx):
                 if kind == "bao-cao" \
                         and account_id not in store._as_assignee_list(
                             task.get("assigned_to")):
-                    self._send_json(403, {"error": "forbidden"})
-                    self._center_log(account_id, "messages", 403)
+                    self._send_json(403, {"error": "forbidden",
+                                          "code": "not_assignee"})
+                    self._center_log(account_id, "messages", 403,
+                                     extra="not_assignee")
                     return
             try:
                 message, duplicate = center.append_message(

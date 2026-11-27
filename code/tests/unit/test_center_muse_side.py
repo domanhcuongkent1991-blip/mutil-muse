@@ -680,6 +680,25 @@ class TestCenterOutbox(CenterMuseFixture):
         self.assertEqual(self._dead_lines()[0]["reason"],
                          "not_assignee")
 
+    def test_flush_drops_report_403_not_assignee(self):
+        center_outbox.enqueue_message(
+            self.muse_root, "muse-phu", "bao-cao", "bao cao",
+            task_id="t-abcdef000001")
+        fake, _calls = self._mock_post([
+            (403, {"error": "forbidden", "code": "not_assignee"},
+             None),
+        ])
+        result = self._flush_mock(fake)
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(result["cursor_after"], 1)
+        self.assertEqual(result["error"], "not_assignee")
+        self.assertEqual(
+            self._failure_state()["consec_auth_failures"], 0)
+        self.assertEqual(self.alerts, [])
+        self.assertEqual(len(self._dead_lines()), 1)
+        self.assertEqual(self._dead_lines()[0]["reason"],
+                         "not_assignee")
+
     def test_flush_keeps_message_403_not_participating(self):
         # FIXL §6.1: 403 not_participating giu dong (thu lai), ca
         # voi dong tin nhan — chi 3 ma C-7 moi bo dong.
