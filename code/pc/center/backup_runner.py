@@ -39,7 +39,7 @@ def backup(root, backup_dir=None, now=None):
                                     path.relative_to(dest)))
     (dest / "SHA256SUMS").write_text("\n".join(sums) + "\n",
                                      encoding="utf-8")
-    old = sorted(dest_root.glob("center-*"))
+    old = sorted(dest_root.glob("center-20*"))
     for stale in old[:-KEEP]:
         shutil.rmtree(stale, ignore_errors=True)
     return {"ok": True, "dest": str(dest), "files": len(sums)}
