@@ -18,6 +18,7 @@ import hashlib
 import json
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import muse_common  # noqa: F401  (dua repo root len sys.path)
@@ -141,10 +142,15 @@ def run_cli(argv=None, post_fn=None, config_loader=None):
         print(json.dumps({"error": "no_config"}))
         return 1
     body = Path(args.body_file).read_text(encoding="utf-8")
+    due_at = args.due_at
+    if not due_at:
+        # Hub bat buoc due_at ISO khong rong; mac dinh han 2 gio.
+        due_at = (datetime.now(timezone(timedelta(hours=7)))
+                  + timedelta(hours=2)).isoformat(timespec="seconds")
     try:
         result = create_child_task(
             config, args.parent_code, args.title, body,
-            args.assignee, due_at=args.due_at, kind=args.kind,
+            args.assignee, due_at=due_at, kind=args.kind,
             post_fn=post_fn)
     except RuntimeError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
