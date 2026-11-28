@@ -220,7 +220,9 @@ class ChatPlanTest(unittest.TestCase):
         self.assertEqual(plan, {"account_id": ME, "room": "dm:%s" % ME,
                                 "seqs": [3], "kind": "center_chat",
                                 "holder": "center_dispatcher:%d"
-                                % int(self.now)})
+                                % int(self.now),
+                                "wake_id": "w-chat-dm-%s-%d"
+                                % (ME, int(self.now))})
 
     def test_oldest_room_first(self):
         root = _muse_root(Path(self.tmp.name) / "muse", messages=[

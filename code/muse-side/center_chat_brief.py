@@ -369,7 +369,8 @@ def build_brief(root, account_id, room, seqs, now=None):
         "   python3 ~/workspace/multibot-code/muse-side/center_outbox.py "
         "--root <root> --account-id <id> "
         "--message-kind hoi --body-file <file nội dung> --file-id "
-        "<f-...> --room <phòng>")
+        "<f-...> --to-account <id-nguoi-nhan> --room <phòng> "
+        "(ghi rõ người nhận để tin không tự sinh việc nhiễu)")
     lines.append(
         "Giới hạn: tối đa 50 MB/file. Tin kèm file chỉ chấp nhận kind "
         "hoi hoặc bao-cao; câu trả lời kèm file trong phòng riêng phải "
@@ -431,7 +432,10 @@ def build_brief(root, account_id, room, seqs, now=None):
         "gắn --task-id của việc đó; CẤM bịa task_id giả):\n"
         "   python3 ~/workspace/multibot-code/muse-side/center_outbox.py "
         "--root <root> --account-id %s --message-kind hoi "
-        "--body-file <file-noi-dung> --room %s"
+        "--body-file <file-noi-dung> --to-account <id-nguoi-nhan> "
+        "--room %s (ghi rõ người nhận để tin không tự sinh việc "
+        "nhiễu; trả lời chủ nhân trong phòng riêng thì bỏ "
+        "--to-account)"
         % (account_id, room))
     lines.append(
         "   Câu gộp > 5.000 ký tự thì tách thành nhiều tin theo thứ "
