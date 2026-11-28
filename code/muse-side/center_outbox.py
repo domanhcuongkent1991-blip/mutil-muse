@@ -84,6 +84,8 @@ AUTH_FAILURE_ALERT_AFTER = 3  # SUY LUẬN, theo mẫu fetcher bot
 # (dòng alert quá 30 phút chưa đẩy thì flush bỏ, không gửi muộn);
 # cooldown dedup DM 30 phút/đợt/loại alert/tài khoản.
 ALERT_TTL_SECONDS = 1800
+BACKOFF_START_SECONDS = 10  # cho lui khi 429/5xx (goi giam tac 28/11)
+BACKOFF_MAX_SECONDS = 60
 ALERT_COOLDOWN_SECONDS = 1800
 ALERT_KINDS = ("cap_stuck", "auth")
 MAX_BODY_LEN = 5000  # tin nhắn ≤ 5.000 ký tự Unicode (GC-19)
@@ -493,6 +495,39 @@ def _reset_auth_state(root, account_id):
         _save_failure_state(root, account_id, state)
 
 
+def _backoff_wait_seconds(root, account_id):
+    """So giay con phai cho truoc khi duoc POST lai (0 = duoc day)."""
+    state = _load_failure_state(root, account_id)
+    until = state.get("backoff_until")
+    if isinstance(until, (int, float)) and not isinstance(until, bool):
+        return max(0.0, float(until) - float(now_epoch()))
+    return 0.0
+
+
+def _note_backoff(root, account_id):
+    """429/5xx/transport: tang dem lien tiep, dat moc cho lui.
+
+    Cho lui 10 -> 20 -> 40 -> 60 giay (tran 60). Ghi vao cung file
+    trang thai outbox, giu nguyen cac truong loi ma/dropped_by_task.
+    """
+    state = _load_failure_state(root, account_id)
+    count = int(state.get("backoff_consecutive") or 0) + 1
+    delay = min(BACKOFF_MAX_SECONDS,
+                BACKOFF_START_SECONDS * (2 ** (count - 1)))
+    state["backoff_consecutive"] = count
+    state["backoff_until"] = float(now_epoch()) + delay
+    _save_failure_state(root, account_id, state)
+    return delay
+
+
+def _reset_backoff(root, account_id):
+    state = _load_failure_state(root, account_id)
+    if state.get("backoff_consecutive") or state.get("backoff_until"):
+        state["backoff_consecutive"] = 0
+        state["backoff_until"] = None
+        _save_failure_state(root, account_id, state)
+
+
 def _dead_letter_path(root):
     return Path(root) / DEAD_LETTER_FILENAME
 
@@ -862,6 +897,14 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
             stats["dropped"] = 1
             stats["error"] = "alert_ttl_expired"
             return stats
+    # (Goi giam tac 28/11) Dang trong thoi gian cho lui sau
+    # 429/5xx/transport: khong POST, khong tien con tro.
+    wait = _backoff_wait_seconds(root, account_id)
+    if wait > 0:
+        log_fn("center_outbox account=%s: cho lui %.0f giay sau "
+               "429/5xx" % (account_id, wait))
+        stats["error"] = "backoff_wait"
+        return stats
     try:
         opener = fetcher.build_opener(
             config["receiver_endpoint"], config.get("via_proxy", False),
@@ -872,6 +915,7 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
         return stats
     status, body, error = _post_row(opener, config, row, http_post_fn)
     if status == 0:
+        _note_backoff(root, account_id)
         log_fn("center_outbox account=%s: transport loi (%s), thu lai "
                "chu ky sau" % (account_id, error))
         stats["error"] = "transport"
@@ -906,6 +950,7 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
             stats["cursor_after"] = line_no
             stats["dropped"] = 1
             stats["error"] = "transition_forbidden"
+            _reset_backoff(root, account_id)
             _record_transition_drop(root, account_id,
                                     row.get("task_id"),
                                     row.get("to_status"), alert_fn)
@@ -932,6 +977,7 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
             stats["cursor_after"] = line_no
             stats["dropped"] = 1
             stats["error"] = reason
+            _reset_backoff(root, account_id)
             return stats
         if status == 403 and row.get("kind") in ("status", "bao-cao") \
                 and isinstance(body, dict) \
@@ -955,12 +1001,14 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
             stats["cursor_after"] = line_no
             stats["dropped"] = 1
             stats["error"] = "not_assignee"
+            _reset_backoff(root, account_id)
             return stats
         _note_auth_failure(root, account_id, log_fn, alert_fn,
                            status=status, body=body)
         stats["error"] = "auth_%d" % status
         return stats
     if status == 429 or status >= 500:
+        _note_backoff(root, account_id)
         log_fn("center_outbox account=%s: hub status=%s, thu lai chu ky "
                "sau" % (account_id, status))
         stats["error"] = "http_%d" % status
@@ -999,6 +1047,7 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
         stats["cursor_after"] = line_no
         stats["dropped"] = 1
         stats["error"] = "http_%d" % status
+        _reset_backoff(root, account_id)
         return stats
     # 200: tiến con trỏ (kể cả duplicate:true — hub đã có dòng này).
     save_cursor(cursor_file, line_no)
@@ -1007,6 +1056,7 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
     if body.get("duplicate"):
         stats["duplicates"] = 1
     _reset_auth_state(root, account_id)
+    _reset_backoff(root, account_id)
     log_fn(
         "center_outbox account=%s: dong %d ok (duplicate=%s), cursor "
         "%d -> %d" % (account_id, line_no, bool(body.get("duplicate")),
