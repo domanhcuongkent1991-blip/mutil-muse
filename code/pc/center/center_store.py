@@ -955,6 +955,24 @@ class CenterStore:
         # store.lock nhu moi ghi kho; TTL 90 giay do giao dien kiem
         # tra khi doc.
         self.typing_path = self.center_dir / "typing.json"
+        self._repair_snapshot_on_startup()
+
+    def _repair_snapshot_on_startup(self):
+        """(Dot 2 HUB-02, 28/11) Snapshot lech events sau crash thi
+        rebuild ngay luc khoi dong thay vi tra 404 vinh vien."""
+        try:
+            if not self.events_path.exists():
+                return
+            with self._locked():
+                events = self._read_events_locked()
+                tasks = self._read_tasks_locked()
+            event_task_ids = {
+                row.get("task_id") for row in events
+                if row.get("kind") == "task" and row.get("task_id")}
+            if event_task_ids - set(tasks):
+                self.rebuild_tasks_state()
+        except Exception:
+            pass
 
     # -- khoa + doc/ghi thap -------------------------------------------
     @contextmanager
@@ -1060,10 +1078,13 @@ class CenterStore:
                     and not isinstance(floor_value, bool) \
                     and floor_value >= 0:
                 floor = floor_value
-        if seq is None:
-            if events is None:
-                events = self._read_events_locked()
-            seq = max((row["seq"] for row in events), default=0)
+        # (Dot 2 HUB-01, 28/11) Seq khong bao gio lui sau event da
+        # ghi: crash giua ghi event va ghi seq.json khong sinh seq
+        # trung nua.
+        if events is None:
+            events = self._read_events_locked()
+        event_max = max((row["seq"] for row in events), default=0)
+        seq = max(seq or 0, event_max)
         return seq, floor
 
     def _read_seen_locked(self):
@@ -2965,11 +2986,24 @@ class CenterStore:
         over_budget = 0
         if watermark is not None and len(events) > max_events:
             over_budget = len(events) - max_events
+        open_task_ids = {
+            tid for tid, task in tasks.items()
+            if task.get("status") not in TERMINAL_STATUSES}
         for row in events:
             stamp = parse_iso_timestamp(row.get("at"))
             too_old = stamp is not None and stamp < cutoff
+            # (Dot 2 HUB-03/04, 28/11) Cat theo tuoi cung phai qua
+            # watermark va khong cat su kien cua viec dang mo.
+            if too_old and watermark is not None \
+                    and row["seq"] > watermark:
+                too_old = False
+            row_task = row.get("task_id") or (
+                (row.get("record") or {}).get("task_id"))
+            if row_task in open_task_ids:
+                too_old = False
             over_count = over_budget > 0 \
-                and row["seq"] <= watermark
+                and row["seq"] <= watermark \
+                and row_task not in open_task_ids
             if too_old or over_count:
                 cut.append(row)
                 if over_count:
