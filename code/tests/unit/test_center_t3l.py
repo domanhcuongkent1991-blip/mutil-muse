@@ -406,6 +406,16 @@ class TestLaw2(StoreFixture):
                      to_account=["muse-phu"])
         self.assertEqual(self.store.list_tasks(), {})
 
+    def test_muse_tag_without_to_account_creates_no_task(self):
+        # Quyet 28/11/2026: tag cua tai khoan Muse chi nhac ten,
+        # ke ca khi khong ghi to_account; chi tag chu nhan moi
+        # sinh viec.
+        message, _dup = self._append(
+            ME, "@muse-phu xem giup viec nay", to_account=None)
+        self.assertEqual(message["mentions"], ["muse-phu"])
+        self.assertEqual(self.store.list_tasks(), {})
+        self.assertEqual(len(self.store.read_events()), 1)
+
     def test_tag_in_dm_creates_no_task(self):
         # Trường hợp 3: tag ở phòng riêng chỉ nhắc tên.
         message, _dup = self._append(
@@ -429,6 +439,13 @@ class TestLaw2(StoreFixture):
     def test_rebuild_does_not_repair_law2_message(self):
         self._append(ME, "@muse-phu, y cau la gi?",
                      to_account=["muse-phu"])
+        result = self.store.rebuild_tasks_state()
+        self.assertEqual(result.get("tag_repaired"), 0)
+        self.assertEqual(self.store.list_tasks(), {})
+
+    def test_rebuild_does_not_repair_muse_tag_message(self):
+        self._append(ME, "@muse-phu xem giup viec nay",
+                     to_account=None)
         result = self.store.rebuild_tasks_state()
         self.assertEqual(result.get("tag_repaired"), 0)
         self.assertEqual(self.store.list_tasks(), {})

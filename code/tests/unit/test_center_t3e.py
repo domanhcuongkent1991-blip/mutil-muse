@@ -501,7 +501,7 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
         before = self.store.read_events()
         seq_msg = before[-1]["seq"] + 1 if before else 1
         msg, dup = self.store.append_message(
-            "muse-chinh", "hoi", None,
+            "owner", "hoi", None,
             None, "@muse-phu xem giúp việc này.",
             msg_id="m-000000000004", client_key="ck-a")
         self.assertFalse(dup)
@@ -514,7 +514,7 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
         self.assertEqual(task["kind"], "khac")
         self.assertIsNone(task["due_at"])
         self.assertEqual(task["assigned_to"], ["muse-phu"])
-        self.assertEqual(task["assigned_from"], "muse-chinh")
+        self.assertEqual(task["assigned_from"], "owner")
         self.assertEqual(task["status"], "moi")
         self.assertEqual(task["source_msg_id"], "m-000000000004")
         self.assertEqual(task["reported_by"], [])
@@ -533,7 +533,7 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
 
     def test_tag_multiple_creates_one_joint_task(self):
         self.store.append_message(
-            "muse-chinh", "hoi", None,
+            "owner", "hoi", None,
             None, "@muse-phu @muse-ba cùng làm.",
             msg_id="m-000000000005", client_key="ck-b")
         task = self.store.get_task_by_source("m-000000000005")
@@ -548,7 +548,7 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
     def test_tag_title_first_nonempty_line_and_truncated(self):
         long_first = "X" * 250
         self.store.append_message(
-            "muse-chinh", "hoi", None,
+            "owner", "hoi", None,
             None, "@muse-phu " + long_first + "\ndòng hai.",
             msg_id="m-000000000006", client_key="ck-c")
         task = self.store.get_task_by_source("m-000000000006")
@@ -588,7 +588,7 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
 
     def test_tag_unknown_mention_dropped_keeps_message(self):
         self.store.append_message(
-            "muse-chinh", "hoi", None,
+            "owner", "hoi", None,
             None, "@muse-khong-co xem giúp @muse-phu.",
             msg_id="m-00000000000b", client_key="ck-h")
         task = self.store.get_task_by_source("m-00000000000b")
@@ -617,10 +617,10 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
 
     def test_resend_same_msg_id_returns_duplicate_no_second_task(self):
         msg1, _ = self.store.append_message(
-            "muse-chinh", "hoi", None, None, "@muse-phu làm giúp.",
+            "owner", "hoi", None, None, "@muse-phu làm giúp.",
             msg_id="m-00000000000e", client_key="ck-k")
         msg2, dup = self.store.append_message(
-            "muse-chinh", "hoi", None, None, "@muse-phu làm giúp.",
+            "owner", "hoi", None, None, "@muse-phu làm giúp.",
             msg_id="m-00000000000e", client_key="ck-k2")
         self.assertTrue(dup)
         self.assertEqual(msg2["msg_id"], msg1["msg_id"])
@@ -631,11 +631,11 @@ class TestStoreTagCreatesTask(T3eStoreFixture):
 
     def test_create_task_from_tag_dedupe(self):
         task1, dup1 = self.store.create_task_from_tag(
-            "muse-chinh", "@muse-phu làm giúp.", "m-00000000000f",
+            "owner", "@muse-phu làm giúp.", "m-00000000000f",
             ["muse-phu"])
         self.assertFalse(dup1)
         task2, dup2 = self.store.create_task_from_tag(
-            "muse-chinh", "@muse-phu làm giúp.", "m-00000000000f",
+            "owner", "@muse-phu làm giúp.", "m-00000000000f",
             ["muse-phu"])
         self.assertTrue(dup2)
         self.assertEqual(task1["task_id"], task2["task_id"])
@@ -716,13 +716,13 @@ class TestStoreTagRepair(T3eStoreFixture):
 
     def test_retry_repairs_missing_task(self):
         self.store.append_message(
-            "muse-chinh", "hoi", None, None, "@muse-phu làm giúp.",
+            "owner", "hoi", None, None, "@muse-phu làm giúp.",
             msg_id="m-000000000013", client_key="ck-rep-1")
         old_task_id = self._simulate_death_between_message_and_task(
             "m-000000000013")
         self.assertIsNone(self.store.get_task_by_source("m-000000000013"))
         msg2, dup = self.store.append_message(
-            "muse-chinh", "hoi", None, None, "@muse-phu làm giúp.",
+            "owner", "hoi", None, None, "@muse-phu làm giúp.",
             msg_id="m-000000000013", client_key="ck-rep-2")
         self.assertTrue(dup)
         task = self.store.get_task_by_source("m-000000000013")
@@ -738,7 +738,7 @@ class TestStoreTagRepair(T3eStoreFixture):
 
     def test_rebuild_repairs_tag_message_without_task(self):
         self.store.append_message(
-            "muse-chinh", "hoi", None, None, "@muse-phu @muse-ba làm.",
+            "owner", "hoi", None, None, "@muse-phu @muse-ba làm.",
             msg_id="m-000000000014", client_key="ck-rep-2")
         self._simulate_death_between_message_and_task("m-000000000014")
         stats = self.store.rebuild_tasks_state()
@@ -991,26 +991,26 @@ class TestStoreJointLifecycle(T3eStoreFixture):
         """Q-V040-3: dat han cho viec chua co han; da co han thi
         tu choi."""
         self.store.append_message(
-            "muse-chinh", "hoi", None, None, "@muse-phu làm giúp.",
+            "owner", "hoi", None, None, "@muse-phu làm giúp.",
             msg_id="m-00000000001b", client_key="ck-due-1")
         task = self.store.get_task_by_source("m-00000000001b")
         task_id = task["task_id"]
         self.assertIsNone(task["due_at"])
         due = "2026-11-27T10:00:00+07:00"
-        record = self.store.set_task_due(task_id, due, by="muse-chinh")
+        record = self.store.set_task_due(task_id, due, by="owner")
         self.assertEqual(record["due_at"], due)
         self.assertTrue(any("Đặt hạn" in (entry.get("note") or "")
                             for entry in record["history"]))
         with self.assertRaises(store_module.CenterError) as ctx:
             self.store.set_task_due(task_id,
                                     "2026-11-28T10:00:00+07:00",
-                                    by="muse-chinh")
+                                    by="owner")
         self.assertEqual(ctx.exception.error, "due_already_set")
         # Dinh dang han sai -> bad_due_at (kiem tra dinh dang
         # truoc khi kiem tra da co han).
         with self.assertRaises(store_module.CenterError) as ctx:
             self.store.set_task_due(task_id, "khong-phai-ngay",
-                                    by="muse-chinh")
+                                    by="owner")
         self.assertEqual(ctx.exception.error, "bad_due_at")
 
     def test_set_task_due_bad_format(self):
@@ -1229,7 +1229,7 @@ class TestReceiverJoint(T3eHttpFixture):
         self.assertEqual(status, 200, body)
         self.assertEqual(body.get("status"), "da-nhan")
 
-    def test_tag_message_creates_task_via_receiver(self):
+    def test_muse_tag_message_creates_no_task_via_receiver(self):
         status, body, _ = self.rc_msg(
             "muse-chinh",
             {"msg_id": "m-000000000020", "kind": "hoi",
@@ -1237,14 +1237,12 @@ class TestReceiverJoint(T3eHttpFixture):
              "body": "@muse-phu làm giúp việc này."},
             PUSH_CHINH)
         self.assertEqual(status, 200, body)
-        task = self.store.get_task_by_source("m-000000000020")
-        self.assertIsNotNone(task)
-        self.assertEqual(task["assigned_to"], ["muse-phu"])
-        self.assertIsNone(task["due_at"])
+        self.assertIsNone(self.store.get_task_by_source(
+            "m-000000000020"))
         _status, feed, _ = self.gw_feed("muse-phu", FETCH_PHU,
                                         "?since=0")
         kinds = [e.get("kind") for e in feed["events"]]
-        self.assertIn("task", kinds)
+        self.assertNotIn("task", kinds)
 
     def test_bao_cao_by_non_assignee_forbidden(self):
         task_id = self._create_joint()
@@ -1282,7 +1280,7 @@ class TestUiJoint(T3eUiFixture):
 
     def _make_tag_task(self):
         self.center.append_message(
-            "muse-chinh", "hoi", None, None,
+            "owner", "hoi", None, None,
             "@muse-phu @muse-ba làm giúp.",
             msg_id="m-000000000023", client_key="ck-ui-tag")
         return self.center.get_task_by_source("m-000000000023")
@@ -1502,10 +1500,12 @@ class TestUiJoint(T3eUiFixture):
 # ---------------------------------------------------------------------------
 
 NEW_BOUNDARY_SENTENCE = (
-    "Tin tag bạn CÓ THỂ là việc mới: tag trong khung chung tạo 1 "
-    "việc chung cho mọi tài khoản được tag — việc đó nằm trong mục "
-    "việc của bạn, báo xong như việc thường; tag trong phòng riêng "
-    "chỉ là nhắc tên, không tạo việc.")
+    "Tin tag bạn CÓ THỂ là việc mới: chủ nhân tag trong khung "
+    "chung mà không ghi rõ người nhận thì tạo 1 việc chung cho mọi "
+    "tài khoản được tag — việc đó nằm trong mục việc của bạn, báo "
+    "xong như việc thường; tag của tài khoản Muse, tag đã ghi rõ "
+    "người nhận và tag trong phòng riêng chỉ là nhắc tên, không "
+    "tạo việc.")
 
 
 class TestBriefTags(unittest.TestCase):

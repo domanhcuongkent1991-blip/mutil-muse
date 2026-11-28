@@ -24,6 +24,7 @@ from pathlib import Path
 import muse_common  # noqa: F401  (dua repo root len sys.path)
 import center_fetcher
 import center_outbox
+import center_plan
 import fetcher
 from shared import ids
 
@@ -155,6 +156,16 @@ def run_cli(argv=None, post_fn=None, config_loader=None):
     except RuntimeError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 1
+    # Harness mong buoc 1: ghi so ke hoach ben sau khi giao viec
+    # con thanh cong. Ghi so loi khong lam hong viec da giao —
+    # bao ro plan_recorded=false de truong nhom ghi lai.
+    try:
+        center_plan.record_child(args.root, args.parent_code,
+                                 result["task_id"], args.assignee)
+        result["plan_recorded"] = True
+    except Exception as exc:  # noqa: BLE001 - ghi so la phu tro
+        result["plan_recorded"] = False
+        result["plan_error"] = "%s: %s" % (type(exc).__name__, exc)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

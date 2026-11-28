@@ -214,17 +214,22 @@ def _as_to_account_list(value):
     raise ValueError("to_account phai la None, chuoi hoac danh sach")
 
 
-def _tag_task_suppressed_by_law2(from_account, to_account):
-    """Luat 2 (v0.6.0, T3l — SPEC TT6, PLAN NS-26; mo rong theo
-    D14, QUYET-DINH-QUA-DEM-20-11.md): tin da ghi ro ``to_account``
-    (chuoi hoac danh sach khong rong) thi tag trong tin chi nhac
-    ten, KHONG sinh viec — ap cho CA tin tu tai khoan Muse LAN tin
-    cua chu nhan gui tay qua o "Gui cho:" (receiver/UI). Ly do D14:
-    o "Gui cho:" sinh ra de chu nhan goi ten tai khoan ma khong
-    sinh viec; chi go ``@ten`` ma KHONG dung "Gui cho:"
-    (``to_account`` rong/None = gui chung) thi van sinh viec theo
-    P2. Kieu ``to_account`` la thi tra False (an toan: P2 nhu cu).
-    ``from_account`` chi con de ghi chu, khong doi hanh vi."""
+def _tag_task_suppressed(from_account, to_account):
+    """Tag chi nhac ten, KHONG sinh viec khi mot trong hai dieu
+    kien dung:
+
+    - Nguoi gui khong phai chu nhan (``from_account != "owner"``):
+      quyet 28/11/2026 — tag cua tai khoan Muse chi nhac ten de
+      cat viec nhieu tu tin tra loi; muon giao viec thi dung duong
+      tao viec chinh thuc.
+    - Tin da ghi ro ``to_account`` (chuoi hoac danh sach khong
+      rong): Luat 2 cu, ap ca tin chu nhan qua o "Gui cho:".
+
+    Chi tin chu nhan go ``@ten`` ma khong ghi ``to_account`` moi
+    sinh viec theo P2. Kieu ``to_account`` la o tin chu nhan thi
+    tra False (an toan: P2 nhu cu)."""
+    if from_account != "owner":
+        return True
     try:
         targets = _as_to_account_list(to_account)
     except ValueError:
@@ -1430,14 +1435,14 @@ class CenterStore:
         goi truc tiep). Dedupe theo ``source_msg_id``: da co viec
         thi tra viec do + True, khong tao viec thu 2.
 
-        (A9, fix gop 21/11) Luat 2: tin da ghi ro ``to_account``
-        (chuoi hoac danh sach khong rong) thi tag chi nhac ten,
-        KHONG sinh viec — ap ca tin chu nhan (D14). Kiem TRUOC khi
+        Tag chi nhac ten khi nguoi gui khong phai chu nhan, hoac
+        tin da ghi ro ``to_account`` (Luat 2, ap ca tin chu nhan
+        qua o "Gui cho:"). Kiem TRUOC khi
         chuan hoa assignees: tin bi chan thi tra (None, False),
         khong tao viec, khong 400 oan. ``allow_over_cap`` mien tran
         5 cho danh sach da mo rong tu marker "@tất cả" (Q-FIX-02).
         """
-        if _tag_task_suppressed_by_law2(from_account, to_account):
+        if _tag_task_suppressed(from_account, to_account):
             return None, False
         if not isinstance(body, str) or not body.strip():
             raise CenterError(400, "bad_body")
@@ -1477,11 +1482,10 @@ class CenterStore:
         body = message.get("body") or ""
         if not body.strip():
             return None
-        # (v0.6.0, T3l — Luat 2, mo rong theo D14) Tin da ghi ro
-        # to_account (ke ca tin chu nhan qua o "Gui cho:") thi tag
+        # Tag cua tai khoan Muse, hoac tin da ghi ro to_account,
         # chi nhac ten — khong bu viec cho tin da luu (ke ca khi
         # gui lai/rebuild).
-        if _tag_task_suppressed_by_law2(
+        if _tag_task_suppressed(
                 message.get("from_account"), message.get("to_account")):
             return None
         msg_id = message.get("msg_id")
@@ -2023,15 +2027,13 @@ class CenterStore:
         vua khong ``file`` -> 400. Chi ``hoi``/``bao-cao`` duoc kem
         file (NS-07 — ``giao-viec`` da bi chan o POSTABLE_MESSAGE_KINDS).
 
-        Tag sinh viec (v0.4.0, P2 moi — doc 10 §3.6) + Luat 2
-        (v0.6.0, T3l — SPEC TT6, PLAN NS-26; mo rong theo D14):
-        tin ``hoi`` o khung chung co mentions hop le + co chu thi
-        hub tao 1 viec chung trong CUNG 1 lan giu khoa (tin seq N
-        -> viec N+1 -> tin ``giao-viec`` N+2) — TRU khi Luat 2 ap
-        dung: tin da ghi ro ``to_account`` (tai khoan Muse hay chu
-        nhan qua o "Gui cho:") thi tag chi nhac ten, KHONG sinh
-        viec; chi go ``@ten`` ma khong ghi ``to_account`` thi van
-        sinh viec theo P2. Gui lai cung ``msg_id`` ma viec chua
+        Tag sinh viec (P2, thu hep 28/11/2026): chi tin ``hoi``
+        cua CHU NHAN o khung chung, co mentions hop le + co chu va
+        KHONG ghi ``to_account``, moi tao 1 viec chung trong CUNG
+        1 lan giu khoa (tin seq N -> viec N+1 -> tin ``giao-viec``
+        N+2). Tag cua tai khoan Muse chi nhac ten; tin da ghi ro
+        ``to_account`` (ke ca chu nhan qua o "Gui cho:") cung chi
+        nhac ten. Gui lai cung ``msg_id`` ma viec chu nhan chua
         tao (chet giua chung) -> tao bu viec cho tin da luu
         (CHAN-1).
         Tin UI khong co ``msg_id`` do nguoi gui sinh: form mang truong
@@ -2181,13 +2183,12 @@ class CenterStore:
                 self._clear_typing_locked(from_account, room)
             message = dict(message)
             message["seq"] = seq
-            # Tag sinh viec (v0.4.0, §3.6): cung 1 lan giu khoa.
-            # (v0.6.0, T3l — Luat 2, mo rong theo D14) Tin da ghi
-            # ro to_account (ke ca tin chu nhan qua o "Gui cho:")
-            # thi tag chi nhac ten, khong sinh viec.
+            # Tag sinh viec: cung 1 lan giu khoa. Chi tag cua chu
+            # nhan khong ghi to_account moi sinh viec; tag Muse va
+            # tag da ghi ro nguoi nhan chi nhac ten.
             if kind == "hoi" and room == ROOM_CHUNG and mentions \
                     and body.strip() \
-                    and not _tag_task_suppressed_by_law2(
+                    and not _tag_task_suppressed(
                         from_account, to_account):
                 assignees = self._filter_tag_assignees(
                     mentions, from_account, read_accounts(self.root))
@@ -2885,11 +2886,9 @@ class CenterStore:
                     continue
                 if msg_id in have_source:
                     continue
-                # (v0.6.0, T3l — Luat 2, mo rong theo D14) Tin
-                # da ghi ro to_account (ke ca tin chu nhan qua o
-                # "Gui cho:") thi tag chi nhac ten — rebuild khong
-                # tao viec bu cho tin nay.
-                if _tag_task_suppressed_by_law2(
+                # Tag Muse, hoac tin da ghi ro to_account, chi
+                # nhac ten — rebuild khong tao viec bu cho tin nay.
+                if _tag_task_suppressed(
                         record.get("from_account"),
                         record.get("to_account")):
                     continue

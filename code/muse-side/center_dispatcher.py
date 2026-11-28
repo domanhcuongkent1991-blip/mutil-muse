@@ -714,13 +714,15 @@ def plan_chat_for_account(root, account_id, deps=None, now=None):
         if center_claims.is_room_claimed(root, account_id, room, now=now):
             continue
         holder = "center_dispatcher:%d" % int(now)
+        wake_id = "w-chat-%s-%d" % (room.replace(":", "-"), int(now))
         if not center_claims.claim_room(
-                root, account_id, room, holder, now=now):
+                root, account_id, room, holder, now=now,
+                wake_id=wake_id):
             continue
         seqs = [entry["seq"] for entry in by_room[room]]
         return {"account_id": account_id, "room": room,
                 "seqs": seqs, "kind": "center_chat",
-                "holder": holder}
+                "holder": holder, "wake_id": wake_id}
     return None
 
 

@@ -421,9 +421,14 @@ def is_chat_room_claim(task_id):
         and task_id.startswith(CHAT_CLAIM_PREFIX)
 
 
-def claim_room(root, account_id, room, holder, now=None):
-    """Giu 1 phong chat (W8). Thang -> True; da co nguoi giu -> False."""
-    return claim(root, account_id, chat_room_key(room), holder, now=now)
+def claim_room(root, account_id, room, holder, now=None, wake_id=None):
+    """Giu 1 phong chat (W8). Thang -> True; da co nguoi giu -> False.
+
+    ``wake_id`` (goi gop 28/11): ma luot danh thuc chat; worker
+    chat phai ack dung ma nay moi duoc tra loi, worker luot cu bi
+    tiep quan khong tra loi lai cung snapshot."""
+    return claim(root, account_id, chat_room_key(room), holder,
+                 now=now, wake_id=wake_id)
 
 
 def is_room_claimed(root, account_id, room, now=None):
@@ -592,6 +597,21 @@ def main(argv=None):
     ack_start_cmd.add_argument("--wake-id", default=None,
                                help="ma luot danh thuc phai khop "
                                     "file claim")
+    heartbeat_cmd = sub.add_parser(
+        "heartbeat",
+        help="gia han lease cho worker dang lam viec dai "
+             "(chay moi ~5 phut)")
+    heartbeat_cmd.add_argument(
+        "--root", default=".",
+        help="thu muc goc phia Muse (mac dinh: .)")
+    heartbeat_cmd.add_argument("--account-id", required=True,
+                               help="tai khoan cua worker")
+    heartbeat_cmd.add_argument("--task-id", required=True,
+                               help="viec ('t-' + 12 ky tu hex) "
+                                    "hoac khoa phong chat__...")
+    heartbeat_cmd.add_argument("--wake-id", default=None,
+                               help="ma luot danh thuc phai khop "
+                                    "file claim")
     args = parser.parse_args(argv)
     if args.command == "release-room":
         return _cli_release_room(args)
@@ -602,6 +622,13 @@ def main(argv=None):
                        wake_id=args.wake_id)
         print("center_claims ack-start: %s viec %s cua %s"
               % ("da xac nhan" if ok else "KHONG xac nhan duoc",
+                 args.task_id, args.account_id))
+        return 0 if ok else 1
+    if args.command == "heartbeat":
+        ok = heartbeat(args.root, args.account_id, args.task_id,
+                       wake_id=args.wake_id)
+        print("center_claims heartbeat: %s viec %s cua %s"
+              % ("da gia han" if ok else "KHONG gia han duoc",
                  args.task_id, args.account_id))
         return 0 if ok else 1
     return 0

@@ -79,13 +79,15 @@ STALE_SECONDS = 60
 # tin do toi luc tra loi, lam tron xuong, toi thieu 1).
 DELAY_ACK_TEMPLATE = "Xin lỗi vì trả lời chậm, tin này đã chờ {minutes} phút."
 
-# Cau ranh gioi tag — NGUYEN VAN SPEC TT18 (v0.4.0). KHONG sua 1 chu
-# khi chep vao brief.
+# Cau ranh gioi tag — cap nhat theo quyet chu nhan 28/11/2026:
+# chi tag cua chu nhan khong ghi nguoi nhan moi sinh viec.
 BOUNDARY_SENTENCE = (
-    "Tin tag bạn CÓ THỂ là việc mới: tag trong khung chung tạo 1 "
-    "việc chung cho mọi tài khoản được tag — việc đó nằm trong mục "
-    "việc của bạn, báo xong như việc thường; tag trong phòng riêng "
-    "chỉ là nhắc tên, không tạo việc.")
+    "Tin tag bạn CÓ THỂ là việc mới: chủ nhân tag trong khung "
+    "chung mà không ghi rõ người nhận thì tạo 1 việc chung cho mọi "
+    "tài khoản được tag — việc đó nằm trong mục việc của bạn, báo "
+    "xong như việc thường; tag của tài khoản Muse, tag đã ghi rõ "
+    "người nhận và tag trong phòng riêng chỉ là nhắc tên, không "
+    "tạo việc.")
 
 REPLY_RULES = (
     "1. Khung chung không tag thì KHÔNG trả lời (chỉ trả lời khi "
@@ -369,7 +371,8 @@ def build_brief(root, account_id, room, seqs, now=None):
         "   python3 ~/workspace/multibot-code/muse-side/center_outbox.py "
         "--root <root> --account-id <id> "
         "--message-kind hoi --body-file <file nội dung> --file-id "
-        "<f-...> --room <phòng>")
+        "<f-...> --to-account <id-nguoi-nhan> --room <phòng> "
+        "(ghi rõ người nhận để tin không tự sinh việc nhiễu)")
     lines.append(
         "Giới hạn: tối đa 50 MB/file. Tin kèm file chỉ chấp nhận kind "
         "hoi hoặc bao-cao; câu trả lời kèm file trong phòng riêng phải "
@@ -431,7 +434,10 @@ def build_brief(root, account_id, room, seqs, now=None):
         "gắn --task-id của việc đó; CẤM bịa task_id giả):\n"
         "   python3 ~/workspace/multibot-code/muse-side/center_outbox.py "
         "--root <root> --account-id %s --message-kind hoi "
-        "--body-file <file-noi-dung> --room %s"
+        "--body-file <file-noi-dung> --to-account <id-nguoi-nhan> "
+        "--room %s (ghi rõ người nhận để tin không tự sinh việc "
+        "nhiễu; trả lời chủ nhân trong phòng riêng thì bỏ "
+        "--to-account)"
         % (account_id, room))
     lines.append(
         "   Câu gộp > 5.000 ký tự thì tách thành nhiều tin theo thứ "
