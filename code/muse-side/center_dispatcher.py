@@ -555,8 +555,19 @@ def _discussion_round_blocked(rounds, room, record):
     to_accounts = _as_account_list(record.get("to_account"))
     if not isinstance(sender, str) or not sender or not to_accounts:
         return False
-    return center_discussion.is_round_closed_for_message(
-        rounds, room, sender, to_accounts)
+    if not center_discussion.is_round_closed_for_message(
+            rounds, room, sender, to_accounts):
+        return False
+    if len(to_accounts) == 1:
+        # Sua 28/11: tin truc tiep 1-1 khong bi vong NHOM da dong
+        # chan; vong dung cap doi (2 nguoi) thi van chan nhu cu.
+        found = center_discussion.round_for_message(
+            rounds, room, sender, to_accounts)
+        if found is not None:
+            parsed = center_discussion.parse_discussion_key(found[0])
+            if parsed is not None and len(parsed[2]) > 2:
+                return False
+    return True
 
 
 def check_chat_wake(record, seq, account_id, ctx):
@@ -606,8 +617,14 @@ def check_chat_wake(record, seq, account_id, ctx):
         # chi bi @ trong body.
         tagged = account_id in _as_account_list(
             record.get("to_account"))
-        if (not tagged and record.get("from_account") == "owner"
+        if (not tagged
                 and not _as_account_list(record.get("to_account"))):
+            # Sua 28/11 (chu nhan duyet): tin khong ghi to_account
+            # ma nhac ten dich danh trong mentions thi danh thuc,
+            # ke ca tin tu tai khoan Muse — bao cao chi @ten ma
+            # khong ghi nguoi nhan tung bi bo sot ca hai chieu.
+            # Tin da ghi to_account thi chi nguoi trong do duoc
+            # wake (giu nguyen chong nhieu NS-H1 o truong hop nay).
             tagged = account_id in _as_account_list(
                 record.get("mentions"))
         if not tagged:
