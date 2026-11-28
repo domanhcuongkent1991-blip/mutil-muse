@@ -106,16 +106,24 @@ MAX_WAKES_PER_CYCLE = 1  # tối đa 1 việc/chu kỳ hook (SUY LUẬN — TN2)
 LEADER_ACCOUNT_ID = "muse-chinh"  # truong nhom (chu nhan chot 28/11)
 
 
+def _is_owner_task(record, account_id):
+    sender = (record or {}).get("assigned_from")
+    if sender == "owner":
+        return True
+    return account_id != LEADER_ACCOUNT_ID and sender == LEADER_ACCOUNT_ID
+
+
 def sort_wake_candidates(candidates, wake_fail_counts, account_id):
-    """Sap ung vien danh thuc: it that bai truoc; cung muc that bai
-    thi viec truong nhom giao truoc viec nhieu; cu nhat truoc trong
-    cung nhom (goi giam tac 28/11)."""
+    """Sap ung vien: viec chu nhan/truong nhom truoc, han gan truoc,
+    it that bai truoc, cu nhat truoc (sua 28/11)."""
     def key(item):
         record = item.get("record") or {}
-        leader = 0 if (account_id != LEADER_ACCOUNT_ID
-                       and record.get("assigned_from")
-                       == LEADER_ACCOUNT_ID) else 1
-        return (wake_fail_counts.get(item["task_id"], 0), leader,
+        priority = 0 if _is_owner_task(record, account_id) else 1
+        due_raw = record.get("due_at")
+        due_epoch = iso_to_epoch(due_raw) if isinstance(due_raw, str) else None
+        due_key = (0, due_epoch) if due_epoch is not None else (1, 0)
+        return (priority, due_key,
+                wake_fail_counts.get(item["task_id"], 0),
                 record.get("created_at") or "")
 
     return sorted(candidates, key=key)
@@ -386,19 +394,50 @@ def _save_wake_state(root, account_id, state):
     atomic_write_json(_wake_state_path(root, account_id), state)
 
 
-def _sweep_reserved_claims(root, account_id, tasks, now, log_fn):
-    """Don claim reserved qua han ack + cap nhat bo dem wake_no_ack.
+def _wakes_in_window(info, now, window=900):
+    attempts = info.get("wake_attempts") if isinstance(info, dict) else None
+    if not isinstance(attempts, list):
+        emitted = info.get("wake_emitted_at") if isinstance(info, dict) else None
+        attempts = [emitted] if isinstance(emitted, (int, float)) else []
+    return [t for t in attempts
+            if isinstance(t, (int, float)) and now - t <= window]
 
-    Tra ve (so claim da giai phong, tap task_id dang tam lui)."""
+
+def _sweep_progress_expired(root, account_id, now, log_fn, alert_fn):
+    """Claim running khong doi tien do qua han: giai phong suat,
+    viec ghi unknown + canh bao; phong chat chi giai phong."""
+    released = 0
+    for info in center_claims.list_claims(root, account_id=account_id, now=now):
+        if not info.get("progress_expired"):
+            continue
+        task_id = info["task_id"]
+        center_claims.release(root, account_id, task_id)
+        released += 1
+        if center_claims.is_chat_room_claim(task_id):
+            continue
+        center_ledger.record(root, account_id, task_id, "unknown",
+                             detail={"reason": "progress_lease_expired"})
+        alert_fn("center_progress_expired", account_id,
+                 {"task_id": task_id})
+        log_fn("center_dispatcher account=%s viec=%s: het han tien "
+               "do, da giai phong suat" % (account_id, task_id))
+    return released
+
+
+def _sweep_reserved_claims(root, account_id, tasks, now, log_fn):
+    """Don claim reserved theo wake da phat that (sua 28/11).
+
+    Chi dem wake_no_ack khi wake da phat du 3 lan trong 900s ma
+    van chua ack; chua du thi giu claim de re-wake cung wake_id.
+    Viec chu nhan/truong nhom mien tam lui. Tra ve
+    (so claim da giai phong, tap task_id dang tam lui, fail_counts)."""
     state = _load_wake_state(root, account_id)
-    status_by_task = {}
+    record_by_task = {}
     for item in tasks:
-        record = item.get("record") or {}
-        status_by_task[item.get("task_id")] = record.get("status")
+        record_by_task[item.get("task_id")] = item.get("record") or {}
     released = 0
     changed = False
-    for info in center_claims.list_claims(
-            root, account_id=account_id, now=now):
+    for info in center_claims.list_claims(root, account_id=account_id, now=now):
         task_id = info["task_id"]
         if info.get("phase") == center_claims.PHASE_RUNNING:
             if task_id in state:
@@ -407,26 +446,34 @@ def _sweep_reserved_claims(root, account_id, tasks, now, log_fn):
             continue
         if not info.get("reserved_expired"):
             continue
-        # Viec da qua trang thai Moi nghia la worker da bat dau
-        # that (ack bang trang thai) — khong tinh wake_no_ack.
-        if status_by_task.get(task_id) not in (None, "moi"):
+        record = record_by_task.get(task_id) or {}
+        if record.get("status") not in (None, "moi"):
             center_claims.release(root, account_id, task_id)
             if task_id in state:
                 del state[task_id]
                 changed = True
             continue
+        wakes = _wakes_in_window(info, now)
+        if len(wakes) < WAKE_NO_ACK_MAX:
+            # Wake chua phat du 3 lan (hoac chua phat): giu claim,
+            # chu ky sau re-wake cung wake_id; khong dem oan.
+            continue
         center_claims.release(root, account_id, task_id)
         released += 1
+        # (Sua 28/11) Dem theo so wake DA PHAT trong cua so: du 3
+        # wake khong ack thi tam lui ngay lan giai phong nay.
         entry = state.get(task_id)
-        count = (int(entry.get("count") or 0) + 1) \
-            if isinstance(entry, dict) else 1
-        entry = {"count": count, "last_at": now}
-        if count >= WAKE_NO_ACK_MAX:
+        prev = int(entry.get("count") or 0) if isinstance(entry, dict) else 0
+        count = max(prev, len(wakes))
+        entry = {"count": count, "last_at": now,
+                 "classification": "no_session",
+                 "wake_id": info.get("wake_id")}
+        if count >= WAKE_NO_ACK_MAX and not _is_owner_task(record, account_id):
             entry["deferred_until"] = now + WAKE_DEFER_SECONDS
         state[task_id] = entry
         changed = True
         log_fn("center_dispatcher account=%s viec=%s: danh thuc "
-               "khong ack lan %d, da giai phong giu cho"
+               "khong ack lan %d (no_session), da giai phong giu cho"
                % (account_id, task_id, count))
     deferred = set()
     fail_counts = {}
@@ -435,9 +482,11 @@ def _sweep_reserved_claims(root, account_id, tasks, now, log_fn):
             continue
         fail_counts[task_id] = int(entry.get("count") or 0)
         until = entry.get("deferred_until")
-        if isinstance(until, (int, float)) and until > now:
+        record = record_by_task.get(task_id) or {}
+        if isinstance(until, (int, float)) and until > now \
+                and not _is_owner_task(record, account_id):
             deferred.add(task_id)
-        elif status_by_task.get(task_id) not in (None, "moi"):
+        elif record.get("status") not in (None, "moi"):
             del state[task_id]
             fail_counts.pop(task_id, None)
             changed = True
@@ -689,54 +738,176 @@ def _wake_eligible_by_room(root, account_id, deps, now):
     return by_room
 
 
+BLOCKED_RECEIPT_TEXT = "Đã nhận tin của anh, em đang kiểm tra và sẽ trả lời tiếp."
+BLOCKED_AFTER_SECONDS = 120
+PARK_SECONDS = 900
+
+
+def _chat_parked_path(root, account_id):
+    ids.validate_bot_id(account_id)
+    return ensure_dir(Path(root) / "center_dispatcher_state" / "chat_parked") / ("%s.json" % account_id)
+
+
+def _load_chat_parked(root, account_id):
+    data = read_json(_chat_parked_path(root, account_id))
+    return data if isinstance(data, dict) else {}
+
+
+def _park_chat(root, account_id, room, seqs, reason, now):
+    parked = _load_chat_parked(root, account_id)
+    parked[room] = {"seqs": list(seqs), "reason": str(reason)[:200],
+                    "at": now, "until": now + PARK_SECONDS}
+    atomic_write_json(_chat_parked_path(root, account_id), parked)
+
+
+def _parked_seqs(root, account_id, room, now):
+    entry = _load_chat_parked(root, account_id).get(room)
+    if isinstance(entry, dict) and isinstance(entry.get("until"), (int, float)) \
+            and entry["until"] > now:
+        seqs = entry.get("seqs")
+        return set(seqs) if isinstance(seqs, list) else set()
+    return set()
+
+
+def _sweep_blocked_chats(root, account_id, now, log_fn):
+    """Worker chat da ack nhung khong tien trien (brief bi chan):
+    gui bien nhan co dinh 1 lan, park seq kem ly do, canh bao 1 lan.
+    Khong ghi moc da tra loi."""
+    sent = 0
+    for info in center_claims.list_claims(root, account_id=account_id, now=now):
+        task_id = info["task_id"]
+        if not center_claims.is_chat_room_claim(task_id):
+            continue
+        if info.get("phase") != center_claims.PHASE_RUNNING:
+            continue
+        acked_at = info.get("acked_at")
+        if not isinstance(acked_at, (int, float)):
+            continue
+        if now - acked_at < BLOCKED_AFTER_SECONDS:
+            continue
+        if info.get("progress") not in (None, "acked", "blocked"):
+            continue
+        room = task_id[len(center_claims.CHAT_CLAIM_PREFIX):].replace("-", ":", 1) \
+            if task_id.startswith(center_claims.CHAT_CLAIM_PREFIX + "dm-") else "chung"
+        seqs = info.get("seqs") or []
+        if not seqs:
+            continue
+        state = read_chat_state(root, account_id)
+        if replied_up_to_seq(state, room) >= max(seqs):
+            continue
+        center_claims.mark_blocked(root, account_id, task_id,
+                                   "brief_blocked_or_no_progress",
+                                   wake_id=info.get("wake_id"), now=now)
+        try:
+            import center_outbox
+            import hashlib
+            digest = hashlib.sha256(
+                ",".join(str(x) for x in sorted(seqs)).encode()).hexdigest()[:16]
+            center_outbox.enqueue_message(
+                root, account_id, "hoi", BLOCKED_RECEIPT_TEXT,
+                room=room,
+                dedupe_key="receipt:%s:%s:%s" % (account_id, room, digest))
+            sent += 1
+        except Exception:  # noqa: BLE001 - bien nhan la du phong
+            pass
+        _park_chat(root, account_id, room, seqs,
+                   "started_blocked", now)
+        _fire_alert(root, account_id, "cap_stuck",
+                    "blocked|%s|%s" % (account_id, room),
+                    "Cảnh báo: lượt trả lời phòng %s của tài khoản %s "
+                    "đã bắt đầu nhưng bị chặn; đã gửi biên nhận và "
+                    "tạm park để thử lại." % (room, account_id),
+                    detail={"room": room, "seqs": list(seqs)},
+                    fingerprint="blocked|%s|%s|%s" % (
+                        account_id, room, info.get("wake_id")))
+        center_claims.release(root, account_id, task_id,
+                             wake_id=info.get("wake_id"))
+        log_fn("center_dispatcher account=%s phong=%s: started_blocked, "
+               "da gui bien nhan + park" % (account_id, room))
+    return sent
+
+
+def _room_is_owner(room, entries, account_id):
+    if room == "dm:%s" % account_id:
+        return True
+    return any((e.get("record") or {}).get("from_account") == "owner"
+               for e in entries)
+
+
+def _enqueue_early_typing(root, account_id, room, seqs, log_fn):
+    try:
+        import center_outbox
+        center_outbox.enqueue_typing(
+            root, account_id, room,
+            dedupe_key="typing:%s:%s:%d" % (account_id, room, max(seqs)))
+    except Exception:  # noqa: BLE001 - typing la best-effort
+        log_fn("center_dispatcher account=%s: typing som loi, bo qua"
+               % account_id)
+
+
 def plan_chat_for_account(root, account_id, deps=None, now=None):
-    """Lap ke hoach tra loi chat cho 1 tai khoan: toi da 1 phong —
-    phong co tin cu nhat len dau. Giu claim phong (W8, thue 15
-    phut) khi chon; hook giai phong claim cua plan khong duoc wake
-    ngay trong chu ky (D15, phuong an (A) — chu ky sau lap lai ke
-    hoach moi, chi cham ~10 giay); plan duoc wake thi worker giu
-    claim va tu go khi tra loi xong. Tra ve None khi khong co phong
-    nao du dieu kien, hoac dict {"account_id", "room", "seqs",
-    "kind": "center_chat", "holder": <holder claim phong>}. CHI DOC
-    file moc — khong ghi moc, khong tao thu muc trang thai."""
+    """Lap ke hoach tra loi chat (sua 28/11): phong chu nhan truoc;
+    claim reserved cung phong duoc re-wake cung wake_id; typing som
+    ngay khi chon phong. Tra ve dict plan hoac None."""
     deps = deps or {}
     log_fn = deps.get("log_fn") or _default_log
     if now is None:
         now = now_epoch()
     cap = deps.get("worker_cap", WORKER_CAP_PER_ACCOUNT)
-    running_fn = deps.get("running_counts_fn") or (
-        lambda acc: center_claims.count_running(root, acc, now=now))
-    # W9 (S2 — tach lan chat): chat chi cho khi LAN CHAT da co
-    # worker dang chay (cap chat rieng) hoac TONG worker trung tam
-    # da cham tran tong (cap viec + cap chat). Worker viec dang
-    # chay KHONG con chan chat nhu luat gop chung truoc S2.
     total_cap = cap + CHAT_WORKER_CAP
-    total_running = running_fn(account_id)
-    _task_running, chat_running = \
-        center_claims.count_running_by_kind(root, account_id, now=now)
-    if chat_running >= CHAT_WORKER_CAP or total_running >= total_cap:
-        log_fn(
-            "center_dispatcher account=%s: worker cap lan chat "
-            "(chat dang chay=%d, cap chat=%d, tong dang chay=%d, "
-            "tran tong=%d), chat cho"
-            % (account_id, chat_running, CHAT_WORKER_CAP,
-               total_running, total_cap))
-        return None
     by_room = _wake_eligible_by_room(root, account_id, deps, now)
+    # Loai seq dang park (started_blocked) cho toi khi het park.
+    for room in list(by_room):
+        parked = _parked_seqs(root, account_id, room, now)
+        if parked:
+            by_room[room] = [e for e in by_room[room]
+                             if e["seq"] not in parked]
+            if not by_room[room]:
+                del by_room[room]
     if not by_room:
         return None
-    rooms = sorted(by_room, key=lambda r: by_room[r][0]["seq"])
+    rooms = sorted(by_room, key=lambda r: (
+        0 if _room_is_owner(r, by_room[r], account_id) else 1,
+        by_room[r][0]["seq"]))
     for room in rooms:
-        # W8: phong dang co worker chat giu thi bo qua, thu phong sau.
-        if center_claims.is_room_claimed(root, account_id, room, now=now):
-            continue
+        seqs = [entry["seq"] for entry in by_room[room]]
+        key = center_claims.chat_room_key(room)
+        info = center_claims.holder_of(root, account_id, key)
+        if isinstance(info, dict):
+            phase = center_claims.claim_phase(root, account_id, key)
+            if phase == center_claims.PHASE_RUNNING:
+                if center_claims.progress_expired(
+                        root, account_id, key, now=now):
+                    center_claims.release(root, account_id, key)
+                else:
+                    continue
+            elif phase == center_claims.PHASE_RESERVED:
+                # Re-wake cung wake_id: claim reserved khong chan
+                # replan; cap khong tinh reserved qua 90s.
+                _enqueue_early_typing(root, account_id, room, seqs, log_fn)
+                return {"account_id": account_id, "room": room,
+                        "seqs": seqs, "kind": "center_chat",
+                        "holder": info.get("holder"),
+                        "wake_id": info.get("wake_id"),
+                        "rewake": True}
+        total_running = center_claims.count_running(
+            root, account_id, now=now)
+        _task_running, chat_running = \
+            center_claims.count_running_by_kind(root, account_id, now=now)
+        if chat_running >= CHAT_WORKER_CAP or total_running >= total_cap:
+            log_fn("center_dispatcher account=%s: worker cap lan chat "
+                   "(chat dang chay=%d, cap chat=%d, tong dang chay=%d, "
+                   "tran tong=%d), chat cho"
+                   % (account_id, chat_running, CHAT_WORKER_CAP,
+                      total_running, total_cap))
+            return None
         holder = "center_dispatcher:%d" % int(now)
         wake_id = "w-chat-%s-%d" % (room.replace(":", "-"), int(now))
         if not center_claims.claim_room(
                 root, account_id, room, holder, now=now,
-                wake_id=wake_id):
+                wake_id=wake_id, seqs=seqs):
             continue
-        seqs = [entry["seq"] for entry in by_room[room]]
+        _enqueue_early_typing(root, account_id, room, seqs, log_fn)
         return {"account_id": account_id, "room": room,
                 "seqs": seqs, "kind": "center_chat",
                 "holder": holder, "wake_id": wake_id}
@@ -845,7 +1016,9 @@ def record_chat_stuck_alerts(root, stuck, now=None, notify_fn=None):
     changed = False
     for item in stuck or []:
         key = "%s|%s" % (item["account_id"], item["room"])
-        if reported.get(key) == item["oldest_seq"]:
+        fingerprint = "%s|b%d" % (
+            item["oldest_seq"], _wait_bucket(item.get("oldest_wait_seconds")))
+        if reported.get(key) in (item["oldest_seq"], fingerprint):
             continue
         alert = {
             "at": epoch_to_iso(now),
@@ -864,7 +1037,7 @@ def record_chat_stuck_alerts(root, stuck, now=None, notify_fn=None):
             notify_fn(alert)
         else:
             append_jsonl(_chat_stuck_alerts_path(root), alert)
-        reported[key] = item["oldest_seq"]
+        reported[key] = fingerprint
         changed = True
         written += 1
     if changed:
@@ -913,14 +1086,27 @@ def _save_cap_state(root, state):
     atomic_write_json(_cap_state_path(root), state)
 
 
+def _wait_bucket(wait_seconds):
+    if wait_seconds is None:
+        return 0
+    if wait_seconds >= 7200:
+        return 3
+    if wait_seconds >= 1800:
+        return 2
+    if wait_seconds >= 300:
+        return 1
+    return 0
+
+
 def _fire_alert(root, account_id, alert_kind, dedup_key, text,
-                detail=None):
+                detail=None, fingerprint=None):
     """Ghi alert qua đường cảnh báo chung (file + DM dedup 30 phút).
     Lỗi đường cảnh báo không được làm hỏng chu kỳ dispatcher."""
     try:
         import center_outbox  # noqa: PLC0415 - tránh import vòng
         return center_outbox.record_alert(
-            root, account_id, alert_kind, dedup_key, text, detail=detail)
+            root, account_id, alert_kind, dedup_key, text, detail=detail,
+            fingerprint=fingerprint)
     except Exception:  # noqa: BLE001 - alert là phụ, chu kỳ là chính
         return False
 
@@ -990,7 +1176,10 @@ def _check_slow_assignees(root, account_id, own, now, log_fn):
                         "chờ người này)." % (assignee, item["task_id"]),
                         detail={"task_id": item["task_id"],
                                 "assignee": assignee,
-                                "wait_seconds": int(now - seen)}):
+                                "wait_seconds": int(now - seen)},
+                        fingerprint="slow|%s|%s|b%d" % (
+                            item["task_id"], assignee,
+                            _wait_bucket(now - seen))):
                     log_fn("center_dispatcher account=%s: assignee "
                            "%s cham tren viec %s (>5 phut)"
                            % (account_id, assignee, item["task_id"]))
@@ -1056,6 +1245,9 @@ def run_cycle_for_account(root, account_id, deps=None, now=None):
         root, account_id, tasks, log_fn)
     # (Cai tien 28/11) Don giu cho reserved qua han ack TRUOC khi
     # tinh cap: giu cho khong ack khong con khoa suat cap 15 phut.
+    summary["progress_swept"] = _sweep_progress_expired(
+        root, account_id, now, log_fn, alert_fn)
+    _sweep_blocked_chats(root, account_id, now, log_fn)
     swept, deferred_tasks, wake_fail_counts = _sweep_reserved_claims(
         root, account_id, tasks, now, log_fn)
     summary["reserved_swept"] = swept
@@ -1108,7 +1300,22 @@ def run_cycle_for_account(root, account_id, deps=None, now=None):
     task_running, _chat_running = \
         center_claims.count_running_by_kind(root, account_id, now=now)
     total_cap = cap + CHAT_WORKER_CAP
-    if task_running >= cap or running >= total_cap:
+    def _is_rewake(item):
+        info = center_claims.holder_of(root, account_id, item["task_id"])
+        return (
+            isinstance(info, dict)
+            and center_claims.claim_phase(root, account_id, item["task_id"])
+            == center_claims.PHASE_RESERVED
+            and (item.get("record") or {}).get("status") not in (
+                "dang-lam", "da-nhan", "da-bao-xong", "da-xac-nhan",
+                "da-huy", "tam-ngung")
+            and (info.get("wake_attempts")
+                 or str(info.get("holder") or "").startswith(
+                     "center_dispatcher")))
+    _rewake_pending = any(
+        _is_rewake(item)
+        for item in own if item["task_id"] not in deferred_tasks)
+    if (task_running >= cap or running >= total_cap) and not _rewake_pending:
         log_fn(
             "center_dispatcher account=%s: worker cap viec trung tam "
             "(viec dang chay=%d, cap viec=%d, tong dang chay=%d, "
@@ -1125,12 +1332,19 @@ def run_cycle_for_account(root, account_id, deps=None, now=None):
                     root, account_id, "cap_stuck",
                     "cap_stuck|%s" % account_id,
                     "Cảnh báo cap kẹt: tài khoản %s đang kẹt cap "
-                    "worker (%d/%d) %d chu kỳ liên tiếp, không đánh "
-                    "thức được worker mới. Việc đã báo xong có thể "
-                    "đang chiếm chỗ; kiểm tra tab Cảnh báo."
-                    % (account_id, running, total_cap, consec),
+                    "worker (việc %d/%d, chat %d/%d, tổng %d/%d) %d "
+                    "chu kỳ liên tiếp, không đánh thức được worker "
+                    "mới. Việc đã báo xong có thể đang chiếm chỗ; "
+                    "kiểm tra tab Cảnh báo."
+                    % (account_id, task_running, cap, _chat_running,
+                       CHAT_WORKER_CAP, running, total_cap, consec),
                     detail={"running": running, "cap": total_cap,
-                            "consec_cycles": consec}):
+                            "task_running": task_running,
+                            "chat_running": _chat_running,
+                            "consec_cycles": consec},
+                    fingerprint="cap|%s|t%d|c%d|b%d" % (
+                        account_id, task_running, _chat_running,
+                        _wait_bucket(consec * 18))):
                 log_fn("center_dispatcher account=%s: cap ket %d chu "
                        "ky lien tiep, da ban alert"
                        % (account_id, consec))
@@ -1148,18 +1362,31 @@ def run_cycle_for_account(root, account_id, deps=None, now=None):
         [item for item in own
          if item["task_id"] not in deferred_tasks],
         wake_fail_counts, account_id)
-    candidate = center_claims.select_oldest_unclaimed(
-        candidates,
-        lambda tid: center_claims.is_claimed(root, account_id, tid, now=now),
-    )
+    # (Sua 28/11) Re-wake cung wake_id: viec dang co claim reserved
+    # duoc phat lai dung luot cu thay vi bi claim chan replan.
+    candidate = None
+    holder = None
+    wake_id = None
+    for item in candidates:
+        info = center_claims.holder_of(root, account_id, item["task_id"])
+        if _is_rewake(item):
+            candidate = item
+            holder = info.get("holder")
+            wake_id = info.get("wake_id")
+            break
     if candidate is None:
-        return summary
+        candidate = center_claims.select_oldest_unclaimed(
+            candidates,
+            lambda tid: center_claims.is_claimed(root, account_id, tid, now=now),
+        )
+        if candidate is None:
+            return summary
+        holder = "center_dispatcher:%d" % int(now)
+        wake_id = "w-%s-%d" % (candidate["task_id"], int(now))
+        if not center_claims.claim(root, account_id, candidate["task_id"],
+                                   holder, now=now, wake_id=wake_id):
+            return summary
     task_id = candidate["task_id"]
-    holder = "center_dispatcher:%d" % int(now)
-    wake_id = "w-%s-%d" % (task_id, int(now))
-    if not center_claims.claim(root, account_id, task_id, holder,
-                               now=now, wake_id=wake_id):
-        return summary
     if worker_fn is None:
         # Không có worker để giao: bỏ giữ ngay để chu kỳ sau xử lý
         # lại (không claim treo).
