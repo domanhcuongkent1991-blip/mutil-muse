@@ -1,0 +1,7 @@
+[Unit]
+Description=Sao luu kho trung tam Muse
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/multibot/pc/center/backup_runner.py %h/multibot
