@@ -103,6 +103,22 @@ WORKER_CAP_PER_ACCOUNT = 2  # tối đa 2 việc/tài khoản (SUY LUẬN — TN
 # Tran tong worker trung tam/tai khoan = cap viec + cap chat = 3.
 CHAT_WORKER_CAP = 1  # toi da 1 worker chat dong thoi/tai khoan (S2)
 MAX_WAKES_PER_CYCLE = 1  # tối đa 1 việc/chu kỳ hook (SUY LUẬN — TN2)
+LEADER_ACCOUNT_ID = "muse-chinh"  # truong nhom (chu nhan chot 28/11)
+
+
+def sort_wake_candidates(candidates, wake_fail_counts, account_id):
+    """Sap ung vien danh thuc: it that bai truoc; cung muc that bai
+    thi viec truong nhom giao truoc viec nhieu; cu nhat truoc trong
+    cung nhom (goi giam tac 28/11)."""
+    def key(item):
+        record = item.get("record") or {}
+        leader = 0 if (account_id != LEADER_ACCOUNT_ID
+                       and record.get("assigned_from")
+                       == LEADER_ACCOUNT_ID) else 1
+        return (wake_fail_counts.get(item["task_id"], 0), leader,
+                record.get("created_at") or "")
+
+    return sorted(candidates, key=key)
 POISON_MAX_FAILURES = 3  # worker lỗi giống nhau >=3 lần -> unknown
 TERMINAL_STATUSES = ("da-xac-nhan", "huy")
 
@@ -1109,10 +1125,10 @@ def run_cycle_for_account(root, account_id, deps=None, now=None):
     # Viec tung danh thuc khong ack xep sau viec chua tung that
     # bai (giu thu tu cu nhat trong cung so lan that bai) de mot
     # viec loi khong khoa hang doi.
-    candidates = sorted(
-        (item for item in own
-         if item["task_id"] not in deferred_tasks),
-        key=lambda item: wake_fail_counts.get(item["task_id"], 0))
+    candidates = sort_wake_candidates(
+        [item for item in own
+         if item["task_id"] not in deferred_tasks],
+        wake_fail_counts, account_id)
     candidate = center_claims.select_oldest_unclaimed(
         candidates,
         lambda tid: center_claims.is_claimed(root, account_id, tid, now=now),

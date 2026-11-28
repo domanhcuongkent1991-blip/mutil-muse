@@ -13,10 +13,15 @@ nhan viec, nen chay lai ca dot tao viec cung khong sinh trung.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
+import sys
 import time
+from pathlib import Path
 
 import muse_common  # noqa: F401  (dua repo root len sys.path)
+import center_fetcher
 import center_outbox
 import fetcher
 from shared import ids
@@ -110,3 +115,43 @@ def create_child_tasks(config, parent_code, children, post_fn=None,
                       "error": str(exc)}
         results.append(result)
     return results
+
+
+def run_cli(argv=None, post_fn=None, config_loader=None):
+    """Duong chay that cho truong nhom tao viec con (goi giam tac
+    28/11): truong nhom goi CLI nay thay vi enqueue giao-viec tay,
+    de gian nhip + backoff + client_key chong trung co hieu luc.
+    In JSON ket qua (task_id, duplicate, attempts); tra 0 khi hub
+    tra 200, 1 khi loi vinh vien/het luot thu."""
+    parser = argparse.ArgumentParser(
+        description="Truong nhom tao viec con co gian nhip.")
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--account-id", required=True)
+    parser.add_argument("--parent-code", required=True)
+    parser.add_argument("--assignee", required=True)
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--body-file", required=True)
+    parser.add_argument("--due-at", default=None)
+    parser.add_argument("--kind", default="khac")
+    args = parser.parse_args(argv)
+    loader = config_loader or center_fetcher.load_center_configs
+    configs = loader(args.root)
+    config = configs.get(args.account_id)
+    if config is None:
+        print(json.dumps({"error": "no_config"}))
+        return 1
+    body = Path(args.body_file).read_text(encoding="utf-8")
+    try:
+        result = create_child_task(
+            config, args.parent_code, args.title, body,
+            args.assignee, due_at=args.due_at, kind=args.kind,
+            post_fn=post_fn)
+    except RuntimeError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_cli(sys.argv[1:]))
