@@ -262,7 +262,7 @@ def enqueue_status(root, account_id, task_id, to_status, note=None,
 
 def enqueue_message(root, account_id, kind, body, task_id=None,
                     to_account=None, msg_id=None, file_id=None,
-                    room=None, alert=None):
+                    room=None, alert=None, dedupe_key=None):
     """Ghi thêm 1 dòng gửi tin vào outbox. Raise ValueError nếu dòng
     không hợp lệ (kể cả kind=giao-viec — CẤM gửi tay). Trả về dòng.
 
@@ -310,6 +310,18 @@ def enqueue_message(root, account_id, kind, body, task_id=None,
     errors = validate_message_row(row)
     if errors:
         raise ValueError("dòng outbox không hợp lệ: %s" % "; ".join(errors))
+    if dedupe_key:
+        # (Dot 1, 28/11) Khoa chong trung theo snapshot: cung
+        # dedupe_key -> cung msg_id; dong da co thi tra dong cu,
+        # khong append trung (may ao bi thay giua enqueue va ghi
+        # moc khong sinh cau tra loi thu hai).
+        import hashlib
+        row["msg_id"] = "m-" + hashlib.sha256(
+            dedupe_key.encode("utf-8")).hexdigest()[:24]
+        existing, _t, _s = read_outbox(root)
+        for _n, old_row in existing:
+            if isinstance(old_row, dict) and old_row.get("msg_id") == row["msg_id"]:
+                return old_row
     append_jsonl(outbox_path(root), row, mode=0o600)
     return row
 
@@ -875,7 +887,27 @@ def flush(root, account_id=None, config=None, log_fn=None, alert_fn=None,
         log_fn("center_outbox account=%s: khong co dong moi, outbox=%d, "
                "cursor=%d" % (account_id, total, stats["cursor_after"]))
         return stats
+    stats["pending"] = len(pending)
     line_no, row = pending[0]
+    # (Dot 1, 28/11) Validator truoc khi POST: dong sai schema (thieu
+    # msg_id/body...) vao dead-letter ngay, khong de _post_row nem
+    # KeyError lap lai khoa ca hang cho.
+    if row.get("kind") == "status":
+        schema_errors = validate_status_row(row)
+    elif row.get("kind") == "typing":
+        schema_errors = [] if row.get("room") and row.get("started_at") else ["typing thieu room/started_at"]
+    else:
+        schema_errors = validate_message_row(row)
+    if schema_errors:
+        log_fn("center_outbox account=%s: bo dong %d sai schema (%s)"
+               % (account_id, line_no, "; ".join(schema_errors)))
+        write_dead_letter(root, account_id, line_no, row, None,
+                          "invalid_schema")
+        save_cursor(cursor_file, line_no)
+        stats["cursor_after"] = line_no
+        stats["dropped"] = 1
+        stats["error"] = "invalid_schema"
+        return stats
     # (Fix gộp 21/11, §4.2 mục 7 — N-S1) TTL dòng alert: dòng alert
     # quá 30 phút chưa đẩy được thì BỎ (tiến cursor, đếm vào
     # dropped) — không gửi muộn sai thời điểm. CHỈ dòng alert;
@@ -1139,6 +1171,8 @@ def main(argv=None):
                              "'dm:<account_id>', v0.3.0, T3c; chỉ dùng "
                              "với --message-kind hoi, bao-cao luôn ở "
                              "khung chung)")
+    parser.add_argument("--dedupe-key", default=None,
+                        help="khoa chong trung theo snapshot")
     parser.add_argument("--typing", action="store_true",
                         help="tín hiệu 'đang trả lời' (v0.6.0, T3h): "
                              "ghi 1 dòng typing vào outbox (cần "
@@ -1199,7 +1233,8 @@ def main(argv=None):
             enqueue_message(args.root, args.account_id, args.message_kind,
                             body, task_id=args.task_id,
                             to_account=args.to_account,
-                            file_id=args.file_id, room=args.room)
+                            file_id=args.file_id, room=args.room,
+                            dedupe_key=args.dedupe_key)
         else:
             enqueue_status(args.root, args.account_id, args.task_id,
                            args.status, note=args.note)

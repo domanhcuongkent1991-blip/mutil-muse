@@ -544,7 +544,7 @@ def main(argv=None):
                 "hoi> --to-account <account-nguoi-nhan> --room "
                 "<phong-cua-tin>" % base)
     out.append("bao tien do: %s --message-kind bao-cao --body-file <file "
-                "bao cao>" % base)
+                "bao cao> --to-account muse-chinh" % base)
     out.append("tu choi viec (chi khi khong lam duoc, kem ly do): "
                 "%s --status huy --note \"<ly do>\"" % base)
     out.append("GHI CHU: tin bao-cao gui rieng le chi la bao tien do; "
