@@ -404,13 +404,18 @@ def build_brief(root, account_id, room, seqs, now=None):
     lines.append("")
     lines.append("LỆNH MẪU (điền sẵn id — chạy đúng thứ tự):")
     seqs_arg = ",".join(str(seq) for seq in seqs)
+    chat_key = center_claims.chat_room_key(room)
+    claim_info = center_claims.holder_of(root, account_id, chat_key)
+    wake_arg = ""
+    if claim_info and claim_info.get("wake_id"):
+        wake_arg = " --wake-id %s" % claim_info["wake_id"]
     lines.append(
         "0) Xác nhận bắt đầu lượt (claim hai pha 28/11 — chạy ngay, "
         "trước mọi bước khác; lệnh báo KHÔNG xác nhận được thì "
         "dừng, không trả lời lượt này):\n"
         "   python3 ~/workspace/multibot-code/muse-side/center_claims.py "
-        "ack-start --root <root> --account-id %s --task-id %s"
-        % (account_id, center_claims.chat_room_key(room)))
+        "ack-start --root <root> --account-id %s --task-id %s%s"
+        % (account_id, chat_key, wake_arg))
     lines.append(
         "1) Tín hiệu \"đang trả lời\" (1 tín hiệu/lượt, sau khi giữ "
         "chỗ xong — qua outbox, không gọi HTTP trực tiếp):\n"
