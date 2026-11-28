@@ -4,4 +4,4 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 %h/multibot/pc/center/backup_runner.py %h/multibot
+ExecStart=/usr/bin/python3 %h/multibot/code/pc/center/backup_runner.py %h/multibot
