@@ -3556,6 +3556,18 @@ def center_health_alerts(root):
         return []
     checked_at = _center_alert_time({"at": data.get("checked_at")})
     out = []
+    # (Dot 3 HUB-06, 28/11) Bo kiem tra chet thi checked_at cu:
+    # qua 15 phut coi la canh bao, khong hien "khong canh bao".
+    import time as _time
+    if checked_at and _time.time() - checked_at > 900:
+        out.append({
+            "kind": "health",
+            "account_id": "center",
+            "at": checked_at,
+            "level": "cần xem",
+            "text": "Bộ kiểm tra sức khỏe trung tâm đã ngừng cập nhật "
+                    "quá 15 phút",
+        })
     for row in data.get("alerts") or []:
         if not isinstance(row, dict):
             continue
