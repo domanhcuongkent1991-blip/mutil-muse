@@ -184,6 +184,7 @@ class TestLeaderCli(unittest.TestCase):
                 seen[0]["client_key"],
                 center_leader.child_client_key("me-001", "muse-1992-a"))
             self.assertEqual(seen[0]["assigned_to"], ["muse-1992-a"])
+            self.assertTrue(seen[0]["due_at"])
 
 
 if __name__ == "__main__":
