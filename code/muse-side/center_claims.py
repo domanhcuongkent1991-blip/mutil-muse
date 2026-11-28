@@ -222,7 +222,8 @@ def ack_start(root, account_id, task_id, wake_id=None, now=None):
     if current_wake is not None and wake_id != current_wake:
         return False
     if info.get("phase") == PHASE_RUNNING:
-        return heartbeat(root, account_id, task_id, now=now)
+        return heartbeat(root, account_id, task_id, now=now,
+                         wake_id=current_wake)
     info = dict(info)
     info["phase"] = PHASE_RUNNING
     info["acked_at"] = now
@@ -248,7 +249,20 @@ def ack_start(root, account_id, task_id, wake_id=None, now=None):
         except OSError:
             pass
         return False
-    return heartbeat(root, account_id, task_id, now=now)
+    ok = heartbeat(root, account_id, task_id, now=now,
+                   wake_id=current_wake)
+    if ok:
+        # (Dot 1, 28/11) Moc ack de do do tre danh thuc -> bat dau.
+        try:
+            with open(Path(root) / "center_claims" / "ack_log.jsonl",
+                      "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(
+                    {"at": now, "account_id": account_id,
+                     "task_id": task_id, "wake_id": current_wake},
+                    ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+    return ok
 
 
 def heartbeat(root, account_id, task_id, now=None, wake_id=None):
@@ -260,9 +274,11 @@ def heartbeat(root, account_id, task_id, now=None, wake_id=None):
     now = now_epoch() if now is None else now
     if not claim_path(root, account_id, task_id).exists():
         return False
-    if wake_id is not None:
-        info = holder_of(root, account_id, task_id)
-        if info is None or info.get("wake_id") != wake_id:
+    info = holder_of(root, account_id, task_id)
+    if info is not None and info.get("wake_id") is not None:
+        # (Dot 1, 28/11) Claim co wake_id thi heartbeat BAT BUOC
+        # dung wake_id do; bo wake_id khong con gia han duoc.
+        if wake_id != info.get("wake_id"):
             return False
     hpath = heartbeat_path(root, account_id, task_id)
     try:
@@ -281,11 +297,18 @@ def heartbeat(root, account_id, task_id, now=None, wake_id=None):
     return True
 
 
-def release(root, account_id, task_id):
+def release(root, account_id, task_id, wake_id=None):
     """Bỏ giữ: xóa file claim + heartbeat. Trả về True nếu đã có claim.
 
     (Fix gộp 21/11, §4.2 mục 5) Mỗi lần xóa file claim thật sự đều
-    ghi 1 dòng audit ra stderr (holder + task + thời điểm + pid)."""
+    ghi 1 dòng audit ra stderr (holder + task + thời điểm + pid).
+    (Dot 1, 28/11) Claim co wake_id thi chi luot dung wake_id moi
+    bo giu duoc; worker cu khong xoa duoc claim cua luot moi."""
+    info = holder_of(root, account_id, task_id)
+    if wake_id is not None and info is not None \
+            and info.get("wake_id") is not None \
+            and wake_id != info.get("wake_id"):
+        return False
     existed = claim_path(root, account_id, task_id).exists()
     _remove_claim_files(root, account_id, task_id)
     return existed
@@ -436,9 +459,10 @@ def is_room_claimed(root, account_id, room, now=None):
     return is_claimed(root, account_id, chat_room_key(room), now=now)
 
 
-def release_room(root, account_id, room):
+def release_room(root, account_id, room, wake_id=None):
     """Bo giu phong chat. Tra ve True neu da co claim."""
-    return release(root, account_id, chat_room_key(room))
+    return release(root, account_id, chat_room_key(room),
+                   wake_id=wake_id)
 
 
 def _cli_release_room(args):

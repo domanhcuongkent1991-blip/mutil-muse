@@ -435,10 +435,11 @@ def build_brief(root, account_id, room, seqs, now=None):
         "   python3 ~/workspace/multibot-code/muse-side/center_outbox.py "
         "--root <root> --account-id %s --message-kind hoi "
         "--body-file <file-noi-dung> --to-account <id-nguoi-nhan> "
-        "--room %s (ghi rõ người nhận để tin không tự sinh việc "
-        "nhiễu; trả lời chủ nhân trong phòng riêng thì bỏ "
-        "--to-account)"
-        % (account_id, room))
+        "--room %s --dedupe-key chat:%s:%s:%d (ghi rõ người nhận "
+        "để tin không tự sinh việc nhiễu; trả lời chủ nhân trong "
+        "phòng riêng thì bỏ --to-account; dedupe-key chống gửi "
+        "trùng khi máy ảo bị thay giữa chừng)"
+        % (account_id, room, account_id, room, max(seqs)))
     lines.append(
         "   Câu gộp > 5.000 ký tự thì tách thành nhiều tin theo thứ "
         "tự thời gian (mỗi tin ≤ 5.000 ký tự), gửi lần lượt từng "
@@ -448,12 +449,13 @@ def build_brief(root, account_id, room, seqs, now=None):
         "outbox thành công — lệnh này tự kiểm chứng outbox, chưa có "
         "câu trả lời thì từ chối ghi):\n"
         "   python3 ~/workspace/multibot-code/muse-side/center_chat_brief.py "
-        "--root <root> --account-id %s --room %s --seqs %s --mark-replied"
-        % (account_id, room, seqs_arg))
+        "--root <root> --account-id %s --room %s --seqs %s%s --mark-replied"
+        % (account_id, room, seqs_arg, wake_arg))
     return "\n".join(lines) + "\n"
 
 
-def mark_chat_replied(root, account_id, room, seqs, now=None):
+def mark_chat_replied(root, account_id, room, seqs, now=None,
+                      wake_id=None):
     """Ghi moc replied_up_to_seq = max(seqs) sau khi cau tra loi da
     vao outbox thanh cong. Kiem chung: outbox phai co it nhat 1 dong
     tin kind=hoi cua dung tai khoan nay vao dung phong nay; chua co
@@ -481,6 +483,16 @@ def mark_chat_replied(root, account_id, room, seqs, now=None):
             "chua thay cau tra loi kind=hoi cua %s vao phong %s trong "
             "outbox — khong ghi moc (tra loi truoc roi ghi moc sau)"
             % (account_id, room))
+    # (Dot 1, 28/11) Chi luot dung wake_id hien hanh moi ghi moc:
+    # worker cu bi tiep quan khong ghi de duoc moc cua luot moi.
+    claim_info = center_claims.holder_of(
+        root, account_id, center_claims.chat_room_key(room))
+    if wake_id is not None and claim_info is not None \
+            and claim_info.get("wake_id") is not None \
+            and wake_id != claim_info.get("wake_id"):
+        raise ValueError(
+            "wake_id khong khop luot hien hanh — khong ghi moc "
+            "(luot cu da bi tiep quan)")
     # Kiem chung outbox TRUOC khi giu khoa (chi doc, khong ghi
     # trang thai) — giu nguyen thu tu cu. Chu trinh doc-sua-ghi
     # trang thai ben duoi giu khoa chung (NS-L1) de khong ghi de
@@ -504,7 +516,10 @@ def mark_chat_replied(root, account_id, room, seqs, now=None):
         atomic_write_json(
             center_dispatcher.chat_state_path(root, account_id), data)
     try:
-        center_claims.release_room(root, account_id, room)
+        center_claims.release_room(
+            root, account_id, room,
+            wake_id=wake_id if wake_id is not None else (
+                claim_info.get("wake_id") if claim_info else None))
     except (ValueError, OSError):
         pass
     return new_marker
@@ -566,6 +581,8 @@ def main(argv=None):
                         help="phòng ('chung' hoặc 'dm:<account_id>')")
     parser.add_argument("--seqs", default=None,
                         help="snapshot seqs, phân cách bằng dấu phẩy")
+    parser.add_argument("--wake-id", default=None,
+                        help="mã lượt đánh thức hiện hành")
     parser.add_argument("--mark-replied", action="store_true",
                         help="ghi mốc đã trả lời (sau khi câu trả lời "
                              "đã vào outbox thành công)")
@@ -579,7 +596,8 @@ def main(argv=None):
         seqs = _parse_seqs(args.seqs)
         if args.mark_replied:
             marker = mark_chat_replied(
-                args.root, args.account_id, args.room, seqs)
+                args.root, args.account_id, args.room, seqs,
+                wake_id=args.wake_id)
             print("center_chat_brief: da ghi moc %s=%d"
                   % (args.room, marker))
             return 0
