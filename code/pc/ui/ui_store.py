@@ -3541,6 +3541,49 @@ def center_cap_auth_alerts(root):
     return out
 
 
+def center_health_alerts(root):
+    """Canh bao suc khoe trung tam tu bo kiem tra phia PC
+    (center_health_check ghi data/center/health_alerts.json):
+    khong keo tin / viec Moi khong ai nhan. Tra list cung dang
+    center_cap_auth_alerts ({kind, account_id, at, level, text}).
+    File thieu/hong -> []."""
+    try:
+        data = read_json_file(
+            Path(root) / "data" / "center" / "health_alerts.json")
+    except OSError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    checked_at = _center_alert_time({"at": data.get("checked_at")})
+    out = []
+    for row in data.get("alerts") or []:
+        if not isinstance(row, dict):
+            continue
+        account_id = row.get("account_id")
+        if not isinstance(account_id, str) or not account_id:
+            continue
+        kind = row.get("kind")
+        detail = row.get("detail")
+        if kind == "no_fetch":
+            text = "Tài khoản %s không kéo tin: %s" % (
+                account_id, detail or "quá ngưỡng")
+        elif kind == "task_unclaimed":
+            text = "Việc %s giao cho %s chưa ai nhận: %s" % (
+                row.get("task_id") or "?", account_id,
+                detail or "quá ngưỡng")
+        else:
+            continue
+        out.append({
+            "kind": "health",
+            "account_id": account_id,
+            "at": checked_at,
+            "level": ("cần xem" if row.get("level") == "red"
+                      else CENTER_CHAT_STUCK_LEVEL),
+            "text": text,
+        })
+    return out
+
+
 def center_slow_assignees(root, now=None):
     """Assignee cham bao tren viec chung (fix gop 21/11, S2-e —
     UT-10): 1 item moi viec dang mo co nguoi chua bao qua 5 phut:

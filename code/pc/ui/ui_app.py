@@ -1521,9 +1521,14 @@ class UiApp:
         ``ui_store.center_cap_auth_alerts`` (file thieu/rong/hong
         -> [], khong crash)."""
         try:
-            return ui_store.center_cap_auth_alerts(self.root)
+            items = ui_store.center_cap_auth_alerts(self.root)
         except OSError:
-            return []
+            items = []
+        try:
+            items = items + ui_store.center_health_alerts(self.root)
+        except OSError:
+            pass
+        return items
 
     def _center_slow_items(self, now):
         """Assignee cham bao >5 phut o tab Canh bao (fix gop 21/11,
