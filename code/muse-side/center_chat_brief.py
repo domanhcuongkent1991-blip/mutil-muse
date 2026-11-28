@@ -79,13 +79,15 @@ STALE_SECONDS = 60
 # tin do toi luc tra loi, lam tron xuong, toi thieu 1).
 DELAY_ACK_TEMPLATE = "Xin lỗi vì trả lời chậm, tin này đã chờ {minutes} phút."
 
-# Cau ranh gioi tag — NGUYEN VAN SPEC TT18 (v0.4.0). KHONG sua 1 chu
-# khi chep vao brief.
+# Cau ranh gioi tag — cap nhat theo quyet chu nhan 28/11/2026:
+# chi tag cua chu nhan khong ghi nguoi nhan moi sinh viec.
 BOUNDARY_SENTENCE = (
-    "Tin tag bạn CÓ THỂ là việc mới: tag trong khung chung tạo 1 "
-    "việc chung cho mọi tài khoản được tag — việc đó nằm trong mục "
-    "việc của bạn, báo xong như việc thường; tag trong phòng riêng "
-    "chỉ là nhắc tên, không tạo việc.")
+    "Tin tag bạn CÓ THỂ là việc mới: chủ nhân tag trong khung "
+    "chung mà không ghi rõ người nhận thì tạo 1 việc chung cho mọi "
+    "tài khoản được tag — việc đó nằm trong mục việc của bạn, báo "
+    "xong như việc thường; tag của tài khoản Muse, tag đã ghi rõ "
+    "người nhận và tag trong phòng riêng chỉ là nhắc tên, không "
+    "tạo việc.")
 
 REPLY_RULES = (
     "1. Khung chung không tag thì KHÔNG trả lời (chỉ trả lời khi "
