@@ -35,6 +35,8 @@ HEARTBEAT_INTERVAL_SECONDS = 300  # ~5 phút cho việc dài (01 §4)
 # khoa suat cap du 15 phut nhu lease dang chay. Claim cu khong co
 # truong phase: co heartbeat -> "running", chua co -> "reserved".
 ACK_WAIT_SECONDS = 300  # han cho worker ack sau khi duoc danh thuc
+RESERVED_CAP_GRACE_SECONDS = 90  # reserved qua 90s khong tinh cap
+PROGRESS_LEASE_SECONDS = 1800  # running khong doi tien do qua 30 phut thi het han
 PHASE_RESERVED = "reserved"
 PHASE_RUNNING = "running"
 
@@ -68,6 +70,52 @@ def _file_age_seconds(path, now):
         return None
 
 
+def _write_claim_info(root, account_id, task_id, info, now=None):
+    """Ghi lai file claim bang tmp+rename (600 + fsync)."""
+    now = now_epoch() if now is None else now
+    cpath = claim_path(root, account_id, task_id)
+    tmp_path = cpath.with_suffix(".json.tmp-%d" % os.getpid())
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, json.dumps(info, ensure_ascii=False).encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, cpath)
+        try:
+            os.utime(cpath, (now, now))
+        except OSError:
+            pass
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+def _progress_epoch(info):
+    if not isinstance(info, dict):
+        return None
+    for key in ("progress_at", "acked_at", "claimed_at", "planned_at"):
+        value = info.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def progress_expired(root, account_id, task_id, now=None):
+    """Claim running khong doi tien do qua PROGRESS_LEASE_SECONDS."""
+    now = now_epoch() if now is None else now
+    if claim_phase(root, account_id, task_id) != PHASE_RUNNING:
+        return False
+    info = holder_of(root, account_id, task_id)
+    epoch = _progress_epoch(info)
+    return epoch is not None and now - epoch > PROGRESS_LEASE_SECONDS
+
+
 def claim_phase(root, account_id, task_id):
     """Pha hien tai cua claim: "reserved" | "running" | None.
 
@@ -92,6 +140,10 @@ def is_reserved_expired(root, account_id, task_id, now=None):
         return False
     if heartbeat_path(root, account_id, task_id).exists():
         return False
+    info = holder_of(root, account_id, task_id) or {}
+    planned = info.get("planned_at") or info.get("claimed_at")
+    if isinstance(planned, (int, float)) and not isinstance(planned, bool):
+        return now - planned > ACK_WAIT_SECONDS
     claim_age = _file_age_seconds(
         claim_path(root, account_id, task_id), now)
     return claim_age is not None and claim_age > ACK_WAIT_SECONDS
@@ -107,6 +159,8 @@ def is_expired(root, account_id, task_id, now=None):
     if not cpath.exists():
         return False
     if is_reserved_expired(root, account_id, task_id, now=now):
+        return True
+    if progress_expired(root, account_id, task_id, now=now):
         return True
     claim_age = _file_age_seconds(cpath, now)
     if claim_age is None:
@@ -126,7 +180,8 @@ def is_claimed(root, account_id, task_id, now=None):
     return not is_expired(root, account_id, task_id, now=now)
 
 
-def claim(root, account_id, task_id, holder, now=None, wake_id=None):
+def claim(root, account_id, task_id, holder, now=None, wake_id=None,
+          extra=None):
     """Giữ 1 việc nguyên tử. Thắng -> True; đã có người giữ -> False.
 
     Người thua đứng ngoài hoàn toàn: không làm, không báo xong.
@@ -146,11 +201,22 @@ def claim(root, account_id, task_id, holder, now=None, wake_id=None):
             "account_id": account_id,
             "holder": str(holder),
             "claimed_at": now,
+            "planned_at": now,
+            "wake_emitted_at": None,
+            "wake_attempts": [],
+            "acked_at": None,
+            "progress": "planned",
+            "progress_at": now,
+            "classification": "no_session",
             "phase": PHASE_RESERVED,
             "wake_id": wake_id,
         },
         ensure_ascii=False,
     ).encode("utf-8")
+    if isinstance(extra, dict) and extra:
+        _payload = json.loads(payload.decode("utf-8"))
+        _payload.update(extra)
+        payload = json.dumps(_payload, ensure_ascii=False).encode("utf-8")
     for _attempt in range(2):
         try:
             fd = os.open(cpath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -227,6 +293,9 @@ def ack_start(root, account_id, task_id, wake_id=None, now=None):
     info = dict(info)
     info["phase"] = PHASE_RUNNING
     info["acked_at"] = now
+    info["progress"] = "acked"
+    info["progress_at"] = now
+    info["classification"] = "started"
     cpath = claim_path(root, account_id, task_id)
     tmp_path = cpath.with_suffix(".json.ack-tmp")
     try:
@@ -265,7 +334,49 @@ def ack_start(root, account_id, task_id, wake_id=None, now=None):
     return ok
 
 
-def heartbeat(root, account_id, task_id, now=None, wake_id=None):
+def mark_wake_emitted(root, account_id, task_id, wake_id=None,
+                      now=None):
+    """Hook ghi moc wake da phat that cho claim reserved cung wake_id."""
+    now = now_epoch() if now is None else now
+    info = holder_of(root, account_id, task_id)
+    if info is None:
+        return False
+    if info.get("wake_id") is not None and wake_id != info.get("wake_id"):
+        return False
+    if info.get("phase") == PHASE_RUNNING:
+        return True
+    info = dict(info)
+    attempts = info.get("wake_attempts")
+    attempts = list(attempts) if isinstance(attempts, list) else []
+    attempts.append(now)
+    info["wake_attempts"] = attempts
+    info["wake_emitted_at"] = now
+    info.setdefault("planned_at", info.get("claimed_at"))
+    info["classification"] = "no_session"
+    return _write_claim_info(root, account_id, task_id, info, now=now)
+
+
+def mark_blocked(root, account_id, task_id, reason, wake_id=None,
+                 now=None):
+    """Danh dau worker da bat dau nhung bi chan (started_blocked)."""
+    now = now_epoch() if now is None else now
+    info = holder_of(root, account_id, task_id)
+    if info is None:
+        return False
+    if info.get("wake_id") is not None and wake_id is not None \
+            and wake_id != info.get("wake_id"):
+        return False
+    info = dict(info)
+    info["classification"] = "started_blocked"
+    info["progress"] = "blocked"
+    info["progress_at"] = now
+    info["blocked_reason"] = str(reason)[:200]
+    info["blocked_at"] = now
+    return _write_claim_info(root, account_id, task_id, info, now=now)
+
+
+def heartbeat(root, account_id, task_id, now=None, wake_id=None,
+              progress=None):
     """Gia hạn lease: ghi/touch file heartbeat. Trả về False nếu
     không có file claim (không heartbeat cho việc không ai giữ).
 
@@ -280,11 +391,18 @@ def heartbeat(root, account_id, task_id, now=None, wake_id=None):
         # dung wake_id do; bo wake_id khong con gia han duoc.
         if wake_id != info.get("wake_id"):
             return False
+    if progress is not None and isinstance(info, dict):
+        updated = dict(info)
+        if updated.get("progress") != progress:
+            updated["progress"] = str(progress)[:120]
+            updated["progress_at"] = now
+            _write_claim_info(root, account_id, task_id, updated, now=now)
     hpath = heartbeat_path(root, account_id, task_id)
     try:
         fd = os.open(hpath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.write(fd, json.dumps({"heartbeat_at": now}).encode("utf-8"))
+            os.write(fd, json.dumps(
+                {"heartbeat_at": now, "progress": progress}).encode("utf-8"))
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -360,11 +478,20 @@ def list_claims(root, account_id=None, now=None):
         phase = info.get("phase")
         if phase not in (PHASE_RESERVED, PHASE_RUNNING):
             phase = PHASE_RUNNING if hb.exists() else PHASE_RESERVED
+        planned_epoch = info.get("planned_at") or info.get("claimed_at")
+        reserved_age = (now - planned_epoch) if isinstance(
+            planned_epoch, (int, float)) else claim_age
         reserved_expired = (
             phase == PHASE_RESERVED
             and not hb.exists()
-            and claim_age is not None
-            and claim_age > ACK_WAIT_SECONDS
+            and reserved_age is not None
+            and reserved_age > ACK_WAIT_SECONDS
+        )
+        progress_epoch = _progress_epoch(info)
+        progress_expired_flag = (
+            phase == PHASE_RUNNING
+            and progress_epoch is not None
+            and now - progress_epoch > PROGRESS_LEASE_SECONDS
         )
         out.append(
             {
@@ -374,8 +501,17 @@ def list_claims(root, account_id=None, now=None):
                 "heartbeat_age": hb_age,
                 "phase": phase,
                 "wake_id": info.get("wake_id"),
+                "planned_at": info.get("planned_at"),
+                "wake_emitted_at": info.get("wake_emitted_at"),
+                "wake_attempts": info.get("wake_attempts") or [],
+                "acked_at": info.get("acked_at"),
+                "progress": info.get("progress"),
+                "progress_at": info.get("progress_at"),
+                "classification": info.get("classification"),
+                "seqs": info.get("seqs"),
+                "progress_expired": progress_expired_flag,
                 "reserved_expired": reserved_expired,
-                "expired": reserved_expired or (
+                "expired": reserved_expired or progress_expired_flag or (
                     claim_age is not None
                     and hb_age is not None
                     and claim_age > LEASE_SECONDS
@@ -386,12 +522,22 @@ def list_claims(root, account_id=None, now=None):
     return out
 
 
+def _counts_toward_cap(info):
+    if info.get("expired"):
+        return False
+    if info.get("phase") == PHASE_RESERVED:
+        age = info.get("claim_age")
+        if isinstance(age, (int, float)) and age > RESERVED_CAP_GRACE_SECONDS:
+            return False
+    return True
+
+
 def count_running(root, account_id, now=None):
     """Số việc trung tâm đang được giữ (claim còn hạn) của 1 tài
     khoản — dùng cho worker cap riêng/tài khoản (TN2)."""
     return sum(
         1 for info in list_claims(root, account_id=account_id, now=now)
-        if not info["expired"]
+        if _counts_toward_cap(info)
     )
 
 
@@ -404,7 +550,7 @@ def count_running_by_kind(root, account_id, now=None):
     task_running = 0
     chat_running = 0
     for info in list_claims(root, account_id=account_id, now=now):
-        if info["expired"]:
+        if not _counts_toward_cap(info):
             continue
         if is_chat_room_claim(info["task_id"]):
             chat_running += 1
@@ -444,14 +590,16 @@ def is_chat_room_claim(task_id):
         and task_id.startswith(CHAT_CLAIM_PREFIX)
 
 
-def claim_room(root, account_id, room, holder, now=None, wake_id=None):
+def claim_room(root, account_id, room, holder, now=None, wake_id=None,
+               seqs=None):
     """Giu 1 phong chat (W8). Thang -> True; da co nguoi giu -> False.
 
     ``wake_id`` (goi gop 28/11): ma luot danh thuc chat; worker
     chat phai ack dung ma nay moi duoc tra loi, worker luot cu bi
     tiep quan khong tra loi lai cung snapshot."""
+    extra = {"seqs": list(seqs)} if seqs is not None else None
     return claim(root, account_id, chat_room_key(room), holder,
-                 now=now, wake_id=wake_id)
+                 now=now, wake_id=wake_id, extra=extra)
 
 
 def is_room_claimed(root, account_id, room, now=None):
@@ -636,6 +784,23 @@ def main(argv=None):
     heartbeat_cmd.add_argument("--wake-id", default=None,
                                help="ma luot danh thuc phai khop "
                                     "file claim")
+    heartbeat_cmd.add_argument("--progress", default=None,
+                               help="moc tien do hien tai cua worker")
+    emitted_cmd = sub.add_parser(
+        "mark-wake-emitted",
+        help="hook ghi moc wake da phat that cho claim reserved")
+    emitted_cmd.add_argument("--root", default=".")
+    emitted_cmd.add_argument("--account-id", required=True)
+    emitted_cmd.add_argument("--task-id", required=True)
+    emitted_cmd.add_argument("--wake-id", default=None)
+    blocked_cmd = sub.add_parser(
+        "mark-blocked",
+        help="danh dau worker da bat dau nhung bi chan")
+    blocked_cmd.add_argument("--root", default=".")
+    blocked_cmd.add_argument("--account-id", required=True)
+    blocked_cmd.add_argument("--task-id", required=True)
+    blocked_cmd.add_argument("--wake-id", default=None)
+    blocked_cmd.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
     if args.command == "release-room":
         return _cli_release_room(args)
@@ -648,9 +813,17 @@ def main(argv=None):
               % ("da xac nhan" if ok else "KHONG xac nhan duoc",
                  args.task_id, args.account_id))
         return 0 if ok else 1
+    if args.command == "mark-wake-emitted":
+        ok = mark_wake_emitted(args.root, args.account_id,
+                               args.task_id, wake_id=args.wake_id)
+        return 0 if ok else 1
+    if args.command == "mark-blocked":
+        ok = mark_blocked(args.root, args.account_id, args.task_id,
+                          args.reason, wake_id=args.wake_id)
+        return 0 if ok else 1
     if args.command == "heartbeat":
         ok = heartbeat(args.root, args.account_id, args.task_id,
-                       wake_id=args.wake_id)
+                       wake_id=args.wake_id, progress=args.progress)
         print("center_claims heartbeat: %s viec %s cua %s"
               % ("da gia han" if ok else "KHONG gia han duoc",
                  args.task_id, args.account_id))

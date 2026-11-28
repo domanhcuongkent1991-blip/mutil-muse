@@ -239,23 +239,42 @@ def validate_message_row(row):
     return errors
 
 
+def _dedupe_client_key(dedupe_key):
+    import hashlib
+    return "dk-" + hashlib.sha256(
+        str(dedupe_key).encode("utf-8")).hexdigest()[:32]
+
+
 def enqueue_status(root, account_id, task_id, to_status, note=None,
-                   client_key=None):
+                   client_key=None, dedupe_key=None, wake_id=None):
     """Ghi thêm 1 dòng đổi trạng thái vào outbox (append + fsync, 600).
-    Raise ValueError nếu dòng không hợp lệ. Trả về dòng đã ghi."""
+    Raise ValueError nếu dòng không hợp lệ. Trả về dòng đã ghi.
+
+    (Sua 28/11) Moi duong doi trang thai deu co khoa chong trung:
+    dedupe_key mac dinh theo task+account+to_status+wake_id; gui
+    lai cung khoa tra dong cu, khong append trung."""
     ids.validate_bot_id(account_id)
+    if dedupe_key is None:
+        dedupe_key = "status:%s:%s:%s:%s" % (
+            account_id, task_id, to_status, wake_id or "")
     row = {
         "kind": "status",
         "account_id": account_id,
         "task_id": task_id,
         "to_status": to_status,
         "note": note,
-        "client_key": client_key or _new_client_key(),
+        "client_key": client_key or _dedupe_client_key(dedupe_key),
+        "dedupe_key": dedupe_key,
         "created_at": now_iso(),
     }
     errors = validate_status_row(row)
     if errors:
         raise ValueError("dòng outbox không hợp lệ: %s" % "; ".join(errors))
+    existing, _t, _s = read_outbox(root)
+    for _n, old_row in existing:
+        if isinstance(old_row, dict) and old_row.get("kind") == "status" \
+                and old_row.get("client_key") == row["client_key"]:
+            return old_row
     append_jsonl(outbox_path(root), row, mode=0o600)
     return row
 
@@ -311,13 +330,17 @@ def enqueue_message(root, account_id, kind, body, task_id=None,
     if errors:
         raise ValueError("dòng outbox không hợp lệ: %s" % "; ".join(errors))
     if dedupe_key:
+        row["dedupe_key"] = dedupe_key
         # (Dot 1, 28/11) Khoa chong trung theo snapshot: cung
         # dedupe_key -> cung msg_id; dong da co thi tra dong cu,
         # khong append trung (may ao bi thay giua enqueue va ghi
         # moc khong sinh cau tra loi thu hai).
         import hashlib
+        # (Sua 28/11 21:53) Hub chi nhan m-+12 hex; ban 24 hex bi
+        # tu choi bad_msg_id (dong 591 live). 12 hex du xac dinh
+        # theo khoa, trung dinh dang duong khong khoa.
         row["msg_id"] = "m-" + hashlib.sha256(
-            dedupe_key.encode("utf-8")).hexdigest()[:24]
+            dedupe_key.encode("utf-8")).hexdigest()[:12]
         existing, _t, _s = read_outbox(root)
         for _n, old_row in existing:
             if isinstance(old_row, dict) and old_row.get("msg_id") == row["msg_id"]:
@@ -347,10 +370,14 @@ def validate_typing_row(row):
     return errors
 
 
-def enqueue_typing(root, account_id, room, started_at=None):
+def enqueue_typing(root, account_id, room, started_at=None,
+                   dedupe_key=None):
     """Ghi thêm 1 dòng tín hiệu "đang trả lời" vào outbox (v0.6.0,
     T3h). 1 tín hiệu/lượt trả lời, sau khi worker chat giữ chỗ xong.
-    Raise ValueError nếu dòng không hợp lệ. Trả về dòng đã ghi."""
+    Raise ValueError nếu dòng không hợp lệ. Trả về dòng đã ghi.
+
+    (Sua 28/11) dedupe_key theo phong+seq lon nhat: typing gui som
+    boi dispatcher va typing cua worker cung khoa thi chi 1 dong."""
     ids.validate_bot_id(account_id)
     row = {
         "kind": "typing",
@@ -360,15 +387,24 @@ def enqueue_typing(root, account_id, room, started_at=None):
         else now_epoch(),
         "created_at": now_iso(),
     }
+    if dedupe_key:
+        row["dedupe_key"] = dedupe_key
     errors = validate_typing_row(row)
     if errors:
         raise ValueError("dòng outbox không hợp lệ: %s" % "; ".join(errors))
+    if dedupe_key:
+        existing, _t, _s = read_outbox(root)
+        for _n, old_row in existing:
+            if isinstance(old_row, dict) \
+                    and old_row.get("kind") == "typing" \
+                    and old_row.get("dedupe_key") == dedupe_key:
+                return old_row
     append_jsonl(outbox_path(root), row, mode=0o600)
     return row
 
 
 def report_done(root, account_id, task_id, report_body, note=None,
-                to_account=None, file_id=None):
+                to_account=None, file_id=None, wake_id=None):
     """Báo xong thật (doc 10 §6.4 + V3-GC-01): ghi LIỀN NHAU trong
     cùng lượt outbox — dòng đổi trạng thái ``da-bao-xong`` trước,
     dòng tin ``bao-cao`` gắn ``task_id`` ngay sau. Trả về
@@ -377,10 +413,13 @@ def report_done(root, account_id, task_id, report_body, note=None,
     (v0.2.5) ``file_id``: dinh kem file vao tin bao-cao (file phai
     tai len hub truoc)."""
     status_row = enqueue_status(
-        root, account_id, task_id, "da-bao-xong", note=note)
+        root, account_id, task_id, "da-bao-xong", note=note,
+        dedupe_key="report-done:%s:%s" % (account_id, task_id),
+        wake_id=wake_id)
     message_row = enqueue_message(
         root, account_id, "bao-cao", report_body, task_id=task_id,
-        to_account=to_account, file_id=file_id)
+        to_account=to_account, file_id=file_id,
+        dedupe_key="report-done:%s:%s" % (account_id, task_id))
     return status_row, message_row
 
 
@@ -544,6 +583,23 @@ def _dead_letter_path(root):
     return Path(root) / DEAD_LETTER_FILENAME
 
 
+def dead_letter_msg_ids(root, account_id=None):
+    """(28/11 21:53) Tap msg_id da vao dead-letter (tin da chet):
+    ghi moc da tra loi phai kiem tra tap nay, tranh ghi moc khi
+    cau tra loi khong toi hub."""
+    entries, _skipped = read_jsonl(_dead_letter_path(root))
+    out = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if account_id and entry.get("account_id") not in (None, account_id):
+            continue
+        msg_id = entry.get("msg_id")
+        if isinstance(msg_id, str) and msg_id:
+            out.add(msg_id)
+    return out
+
+
 def _trim_dead_letter_locked(path):
     """Cat file dead-letter trong cung lan giu khoa (G4, FIXL §6.2).
 
@@ -586,6 +642,9 @@ def write_dead_letter(root, account_id, line_no, row, http_status,
         "to_status": row.get("to_status")
         if isinstance(row, dict) else None,
         "kind": row.get("kind") if isinstance(row, dict) else None,
+        "msg_id": row.get("msg_id") if isinstance(row, dict) else None,
+        "dedupe_key": row.get("dedupe_key")
+        if isinstance(row, dict) else None,
         "http_status": http_status,
         "reason": reason,
         "hub_error": hub_error,
@@ -676,7 +735,7 @@ def _alert_paths(root, alert_kind):
 
 
 def record_alert(root, account_id, alert_kind, dedup_key, text,
-                 detail=None, now=None):
+                 detail=None, now=None, fingerprint=None):
     """Ghi 1 alert: 1 dòng vào file alert (kênh chính) + 1 DM
     kind="hoi" vào outbox (room="dm:<account_id>" của chính tài
     khoản này — 1 VM = 1 tài khoản; body không chứa "@").
@@ -695,8 +754,14 @@ def record_alert(root, account_id, alert_kind, dedup_key, text,
         reported = {}
     entry = reported.get(dedup_key)
     if isinstance(entry, dict):
+        # (Sua 28/11) Canh bao theo chuyen trang thai: cung van tay
+        # thi khong gui lai du het cooldown; van tay doi (leo bac)
+        # thi gui ngay.
+        if fingerprint is not None \
+                and entry.get("fingerprint") == fingerprint:
+            return False
         epoch = entry.get("epoch")
-        if isinstance(epoch, (int, float)) \
+        if fingerprint is None and isinstance(epoch, (int, float)) \
                 and not isinstance(epoch, bool) \
                 and now - epoch < ALERT_COOLDOWN_SECONDS:
             return False
@@ -710,7 +775,8 @@ def record_alert(root, account_id, alert_kind, dedup_key, text,
     if isinstance(detail, dict) and detail:
         alert["detail"] = detail
     append_jsonl(alerts_path, alert)
-    reported[dedup_key] = {"at": epoch_to_iso(now), "epoch": now}
+    reported[dedup_key] = {"at": epoch_to_iso(now), "epoch": now,
+                           "fingerprint": fingerprint}
     atomic_write_json(reported_path, reported)
     try:
         enqueue_message(root, account_id, "hoi", text,
@@ -1173,6 +1239,9 @@ def main(argv=None):
                              "khung chung)")
     parser.add_argument("--dedupe-key", default=None,
                         help="khoa chong trung theo snapshot")
+    parser.add_argument("--wake-id", default=None,
+                        help="ma luot danh thuc (khoa chong trung "
+                             "trang thai)")
     parser.add_argument("--typing", action="store_true",
                         help="tín hiệu 'đang trả lời' (v0.6.0, T3h): "
                              "ghi 1 dòng typing vào outbox (cần "
@@ -1191,7 +1260,8 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         try:
-            enqueue_typing(args.root, args.account_id, args.room)
+            enqueue_typing(args.root, args.account_id, args.room,
+                           dedupe_key=args.dedupe_key)
         except ValueError as exc:
             print("center_outbox: %s" % exc, file=sys.stderr)
             return 1
@@ -1221,7 +1291,7 @@ def main(argv=None):
                 if args.body_file is not None else ""
             report_done(args.root, args.account_id, args.task_id, body,
                         note=args.note, to_account=args.to_account,
-                        file_id=args.file_id)
+                        file_id=args.file_id, wake_id=args.wake_id)
         elif args.message_kind:
             if args.body_file is None and args.file_id is None:
                 print("center_outbox: --message-kind cần --body-file "
@@ -1237,7 +1307,9 @@ def main(argv=None):
                             dedupe_key=args.dedupe_key)
         else:
             enqueue_status(args.root, args.account_id, args.task_id,
-                           args.status, note=args.note)
+                           args.status, note=args.note,
+                           dedupe_key=args.dedupe_key,
+                           wake_id=args.wake_id)
     except ValueError as exc:
         print("center_outbox: %s" % exc, file=sys.stderr)
         return 1
